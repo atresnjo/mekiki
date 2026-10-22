@@ -1,0 +1,277 @@
+import { createSign } from "node:crypto"
+import { Cache, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
+import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { GitHubError, type PrRef } from "./domain.ts"
+
+export const PullRequest = Schema.Struct({
+  title: Schema.String,
+  body: Schema.NullOr(Schema.String),
+  draft: Schema.optional(Schema.Boolean),
+  state: Schema.String,
+  html_url: Schema.String,
+  head: Schema.Struct({ sha: Schema.String }),
+})
+export interface PullRequest extends Schema.Schema.Type<typeof PullRequest> {}
+
+export interface ReviewComment {
+  readonly path: string
+  readonly line: number
+  readonly body: string
+}
+
+export interface Interface {
+  readonly pullRequest: (pr: PrRef) => Effect.Effect<PullRequest, GitHubError>
+  /** the whole pull request as a unified diff */
+  readonly diff: (pr: PrRef) => Effect.Effect<string, GitHubError>
+  /** what changed between two commits, as a unified diff */
+  readonly compare: (pr: PrRef, base: string, head: string) => Effect.Effect<string, GitHubError>
+  /** one review with every inline comment: a single api call */
+  readonly postReview: (
+    pr: PrRef,
+    review: { readonly commitId: string; readonly body: string; readonly comments: ReadonlyArray<ReviewComment> },
+  ) => Effect.Effect<void, GitHubError>
+  /** where git fetches the repository from, and the header that lets it */
+  readonly gitRemote: (pr: PrRef) => Effect.Effect<{ readonly url: string; readonly authorization: Redacted.Redacted }, GitHubError>
+  /** the repository at a commit, as a gzipped tarball, streamed */
+  readonly tarball: (pr: PrRef, sha: string) => Stream.Stream<Uint8Array, GitHubError>
+  /** a comment in the pull request's conversation: its id */
+  readonly createComment: (pr: PrRef, body: string) => Effect.Effect<number, GitHubError>
+  readonly updateComment: (pr: PrRef, id: number, body: string) => Effect.Effect<void, GitHubError>
+  /** 👀 on a comment: the command was seen */
+  readonly acknowledge: (pr: PrRef, commentId: number) => Effect.Effect<void, GitHubError>
+}
+
+export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
+
+export interface Options {
+  readonly apiUrl: string
+  /** none (and no app): borrow the gh cli's login */
+  readonly token: Option.Option<Redacted.Redacted>
+  /** a github app: each repository is reached through the app's installation on it */
+  readonly app: {
+    readonly id: Option.Option<string>
+    readonly privateKey: Option.Option<Redacted.Redacted>
+    readonly privateKeyFile: Option.Option<string>
+  }
+}
+
+const decodePullRequest = Schema.decodeUnknownEffect(PullRequest)
+const decodeComment = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
+const decodeInstallation = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
+const decodeAccessToken = Schema.decodeUnknownEffect(Schema.Struct({ token: Schema.String, expires_at: Schema.String }))
+
+/** what an app proves it's the app with: a jwt signed with its private key, good for ten minutes */
+export const appJwt = (appId: string, privateKey: string, now: number) => {
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url")
+  const seconds = Math.floor(now / 1000)
+  // a minute back: github's clock may be behind ours
+  const unsigned = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ iat: seconds - 60, exp: seconds + 540, iss: appId })}`
+  return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(privateKey, "base64url")}`
+}
+
+/** `gh auth token`, for running locally without minting a token */
+const ghToken = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const token = yield* spawner.string(ChildProcess.make("gh", ["auth", "token"]))
+  return Redacted.make(token.trim())
+}).pipe(
+  Effect.mapError(() => new GitHubError({ operation: "auth", message: "no GITHUB_TOKEN set and `gh auth token` failed: set one or run `gh auth login`" })),
+)
+
+export const make = Effect.fn("GitHub.make")(function* (options: Options) {
+  const fs = yield* FileSystem.FileSystem
+  const base = (yield* HttpClient.HttpClient).pipe(
+    HttpClient.mapRequest(
+      flow(HttpClientRequest.prependUrl(options.apiUrl), HttpClientRequest.setHeaders({ "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "glance" })),
+    ),
+  )
+  // reads are idempotent: retry what failed for a moment. writes are never retried
+  const reader = base.pipe(HttpClient.retryTransient({ schedule: Schedule.exponential("200 millis"), times: 2 }))
+
+  const execute = (client: HttpClient.HttpClient, operation: string, request: HttpClientRequest.HttpClientRequest) =>
+    client.execute(request).pipe(
+      Effect.mapError((e) => new GitHubError({ operation, message: e.message })),
+      Effect.flatMap((response: HttpClientResponse.HttpClientResponse) =>
+        response.status < 400
+          ? Effect.succeed(response)
+          : response.text.pipe(
+              Effect.orElseSucceed(() => ""),
+              Effect.flatMap((body) =>
+                Effect.fail(new GitHubError({ operation, status: response.status, message: body.slice(0, 1000) || `status ${response.status}` })),
+              ),
+            ),
+      ),
+    )
+
+  const json = <A>(operation: string, response: HttpClientResponse.HttpClientResponse, decode: (u: unknown) => Effect.Effect<A, Schema.SchemaError>) =>
+    response.json.pipe(
+      Effect.flatMap(decode),
+      Effect.mapError((e) => new GitHubError({ operation, message: e.message })),
+    )
+
+  // ---------- who glance is on github: an app's installation on each repository, else one token ----------
+
+  const appId = options.app.id
+  const privateKey = Option.isSome(options.app.privateKey)
+    ? Option.some(Redacted.value(options.app.privateKey.value).replaceAll("\\n", "\n"))
+    : Option.isSome(options.app.privateKeyFile)
+      ? Option.some(
+          yield* fs
+            .readFileString(options.app.privateKeyFile.value)
+            .pipe(Effect.mapError((e) => new GitHubError({ operation: "auth", message: `couldn't read GITHUB_APP_PRIVATE_KEY_FILE: ${e.message}` }))),
+        )
+      : Option.none<string>()
+
+  const tokenFor: (pr: PrRef) => Effect.Effect<string, GitHubError> = yield* Option.isSome(appId) && Option.isSome(privateKey)
+    ? Effect.gen(function* () {
+        const asApp = (request: HttpClientRequest.HttpClientRequest) =>
+          HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, Date.now())).pipe(HttpClientRequest.acceptJson)
+        // which installation reaches a repository changes rarely: an hour
+        const installations = yield* Cache.makeWith(
+          (repo: string) =>
+            execute(reader, "installation", asApp(HttpClientRequest.get(`/repos/${repo}/installation`))).pipe(
+              Effect.flatMap((r) => json("installation", r, decodeInstallation)),
+              Effect.map((i) => i.id),
+            ),
+          { capacity: 1024, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.hours(1) : Duration.zero) },
+        )
+        // an installation token lasts an hour: kept until five minutes before it runs out
+        const tokens = yield* Cache.makeWith(
+          (installation: number) =>
+            execute(base, "accessToken", asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`))).pipe(
+              Effect.flatMap((r) => json("accessToken", r, decodeAccessToken)),
+            ),
+          {
+            capacity: 1024,
+            timeToLive: (exit) =>
+              Exit.isSuccess(exit) ? Duration.millis(Math.max(0, Date.parse(exit.value.expires_at) - Date.now() - 5 * 60_000)) : Duration.zero,
+          },
+        )
+        return (pr: PrRef) =>
+          Cache.get(installations, `${pr.owner}/${pr.repo}`).pipe(
+            Effect.flatMap((id) => Cache.get(tokens, id)),
+            Effect.map((t) => t.token),
+            Effect.mapError((e) =>
+              e.status === 404 ? new GitHubError({ operation: "auth", status: 404, message: `the github app isn't installed on ${pr.owner}/${pr.repo}` }) : e,
+            ),
+          )
+      })
+    : Effect.map(Option.isSome(options.token) ? Effect.succeed(options.token.value) : ghToken, (token) => () => Effect.succeed(Redacted.value(token)))
+
+  if (Option.isSome(appId) !== Option.isSome(privateKey))
+    return yield* new GitHubError({ operation: "auth", message: "a github app needs both GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or _FILE)" })
+
+  /** a request on a pull request's repository, with whichever token reaches it */
+  const send = (client: HttpClient.HttpClient, operation: string, pr: PrRef, request: HttpClientRequest.HttpClientRequest) =>
+    tokenFor(pr).pipe(Effect.flatMap((token) => execute(client, operation, HttpClientRequest.bearerToken(request, token))))
+
+  const text = (operation: string, pr: PrRef, request: HttpClientRequest.HttpClientRequest) =>
+    send(reader, operation, pr, request).pipe(Effect.flatMap((r) => r.text.pipe(Effect.mapError((e) => new GitHubError({ operation, message: e.message })))))
+
+  const path = (pr: PrRef) => `/repos/${pr.owner}/${pr.repo}`
+
+  const pullRequest = Effect.fn("GitHub.pullRequest")(function* (pr: PrRef) {
+    const response = yield* send(reader, "pullRequest", pr, HttpClientRequest.get(`${path(pr)}/pulls/${pr.number}`).pipe(HttpClientRequest.acceptJson))
+    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
+    return yield* decodePullRequest(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
+  })
+
+  const diff = Effect.fn("GitHub.diff")(function* (pr: PrRef) {
+    return yield* text(
+      "diff",
+      pr,
+      HttpClientRequest.get(`${path(pr)}/pulls/${pr.number}`).pipe(HttpClientRequest.setHeader("Accept", "application/vnd.github.diff")),
+    )
+  })
+
+  const compare = Effect.fn("GitHub.compare")(function* (pr: PrRef, from: string, to: string) {
+    return yield* text(
+      "compare",
+      pr,
+      HttpClientRequest.get(`${path(pr)}/compare/${from}...${to}`).pipe(HttpClientRequest.setHeader("Accept", "application/vnd.github.diff")),
+    )
+  })
+
+  const postReview: Interface["postReview"] = Effect.fn("GitHub.postReview")(function* (pr, review) {
+    const request = (comments: ReadonlyArray<ReviewComment>, body: string) =>
+      HttpClientRequest.post(`${path(pr)}/pulls/${pr.number}/reviews`).pipe(
+        HttpClientRequest.acceptJson,
+        HttpClientRequest.bodyJsonUnsafe({
+          commit_id: review.commitId,
+          event: "COMMENT",
+          body,
+          comments: comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", body: c.body })),
+        }),
+      )
+    yield* send(base, "postReview", pr, request(review.comments, review.body)).pipe(
+      // github rejects the whole review when one line moved under us (a push mid-review):
+      // say it all in the review body instead of losing it
+      Effect.catchIf(
+        (e) => e.status === 422 && review.comments.length > 0,
+        () =>
+          send(
+            base,
+            "postReview",
+            pr,
+            request([], `${review.body}\n\n${review.comments.map((c) => `**\`${c.path}:${c.line}\`**\n\n${c.body}`).join("\n\n---\n\n")}`),
+          ),
+      ),
+    )
+  })
+
+  const acknowledge = Effect.fn("GitHub.acknowledge")(function* (pr: PrRef, commentId: number) {
+    yield* send(
+      base,
+      "acknowledge",
+      pr,
+      HttpClientRequest.post(`${path(pr)}/issues/comments/${commentId}/reactions`).pipe(
+        HttpClientRequest.acceptJson,
+        HttpClientRequest.bodyJsonUnsafe({ content: "eyes" }),
+      ),
+    )
+  })
+
+  // github answers with a redirect to codeload, which fetch follows
+  const tarball = (pr: PrRef, sha: string) =>
+    Stream.unwrap(
+      send(reader, "tarball", pr, HttpClientRequest.get(`${path(pr)}/tarball/${sha}`)).pipe(
+        Effect.map((response) => response.stream.pipe(Stream.mapError((e) => new GitHubError({ operation: "tarball", message: e.message })))),
+      ),
+    )
+
+  const createComment = Effect.fn("GitHub.createComment")(function* (pr: PrRef, body: string) {
+    const response = yield* send(
+      base,
+      "createComment",
+      pr,
+      HttpClientRequest.post(`${path(pr)}/issues/${pr.number}/comments`).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bodyJsonUnsafe({ body })),
+    )
+    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
+    const comment = yield* decodeComment(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
+    return comment.id
+  })
+
+  const updateComment = Effect.fn("GitHub.updateComment")(function* (pr: PrRef, id: number, body: string) {
+    yield* send(
+      base,
+      "updateComment",
+      pr,
+      HttpClientRequest.patch(`${path(pr)}/issues/comments/${id}`).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bodyJsonUnsafe({ body })),
+    )
+  })
+
+  // github.com's api lives on api.github.com; enterprise's under /api/v3 of the same host
+  const webUrl = options.apiUrl === "https://api.github.com" ? "https://github.com" : options.apiUrl.replace(/\/api\/v3\/?$/, "")
+  const gitRemote = (pr: PrRef) =>
+    Effect.map(tokenFor(pr), (token) => ({
+      url: `${webUrl}/${pr.owner}/${pr.repo}.git`,
+      authorization: Redacted.make(`Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`),
+    }))
+
+  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge })
+})
+
+export const layer = (options: Options) => Layer.effect(Service, make(options)).pipe(Layer.provide(FetchHttpClient.layer))
+
+export * as GitHub from "./github.ts"

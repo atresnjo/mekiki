@@ -1,0 +1,43 @@
+{
+  "name": "glance",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run dev:api & bun run dev:web; wait",
+    "dev:api": "bun --hot src/main.ts",
+    "dev:web": "vite web",
+    "build": "vite build web",
+    "start": "bun src/main.ts",
+    "preview": "vite preview web",
+    "review": "bun src/cli.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
+    "test": "bun test",
+    "lint": "oxlint",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.5",
+    "effect": "4.0.5"
+  },
+  "devDependencies": {
+    "@cloudflare/kumo": "^2.14.0",
+    "@effect/atom-react": "4.0.5",
+    "@phosphor-icons/react": "^2.1.10",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/react-router": "^1.170.44",
+    "@tanstack/router-plugin": "^1.168.46",
+    "@types/bun": "^1.4.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "echarts": "6",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

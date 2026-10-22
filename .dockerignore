@@ -1,0 +1,12 @@
+**/node_modules
+web/dist
+.data
+.env
+.env.*
+!.env.example
+.git
+.github
+.tanstack
+web/.tanstack
+.claude
+*.log

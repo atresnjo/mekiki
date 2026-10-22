@@ -1,0 +1,43 @@
+# glance on a vps: `docker compose up -d --build`. caddy answers on 80 and 443 for GLANCE_DOMAIN
+# (point its dns here first) and forwards /api/ to glance, which isn't reachable from outside
+services:
+  glance:
+    build: { context: ., target: server }
+    restart: unless-stopped
+    # the agent clis start processes of their own: an init reaps them
+    init: true
+    env_file: .env
+    # what the setup depends on: not overridable from .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "7420"
+      GLANCE_DB: /data/glance.db
+      GLANCE_BACKUPS: /data/backups
+      GLANCE_CHECKOUTS: /data/checkouts
+      CODEX_HOME: /data/codex
+      GLANCE_LOG_FORMAT: json
+      GLANCE_TRUST_PROXY: "true"
+    volumes:
+      - glance-data:/data
+    # a stop leaves running reviews to the next start, which takes them up again
+    stop_grace_period: 30s
+
+  web:
+    build: { context: ., target: web }
+    restart: unless-stopped
+    environment:
+      GLANCE_DOMAIN: ${GLANCE_DOMAIN:?set GLANCE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - glance
+
+volumes:
+  glance-data:
+  caddy-data:
+  caddy-config:
