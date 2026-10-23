@@ -11,16 +11,35 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: "7420"
-      GLANCE_DB: /data/glance.db
-      GLANCE_BACKUPS: /data/backups
+      DATABASE_URL: postgres://glance:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/glance
       GLANCE_CHECKOUTS: /data/checkouts
       CODEX_HOME: /data/codex
       GLANCE_LOG_FORMAT: json
       GLANCE_TRUST_PROXY: "true"
     volumes:
       - glance-data:/data
+    # glance migrates the database when it starts: it needs postgres up first
+    depends_on:
+      postgres:
+        condition: service_healthy
     # a stop leaves running reviews to the next start, which takes them up again
     stop_grace_period: 30s
+
+  # reachable only from glance, on the compose network
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: glance
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: glance
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glance -d glance"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   web:
     build: { context: ., target: web }
@@ -39,5 +58,6 @@ services:
 
 volumes:
   glance-data:
+  postgres-data:
   caddy-data:
   caddy-config:

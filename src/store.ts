@@ -1,10 +1,11 @@
-// reviews and settings in one sqlite file (bun:sqlite: synchronous and sub-millisecond, so calls
-// are plain Effect.sync)
-import { Database } from "bun:sqlite"
-import { mkdirSync } from "node:fs"
-import { dirname } from "node:path"
+// reviews, settings, glance's comments and webhook deliveries, in postgres (database.ts). a query
+// that fails is a defect here: the rpc api and the webhook already log those and answer with a
+// failure, and nothing glance does could recover from a database that's down. ping is the exception
+import { and, desc, eq, lt, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Database } from "./database.ts"
 import { Review, Settings } from "./domain.ts"
+import { deliveries, panels, reviews, settings as settingsTable } from "./schema.ts"
 
 export type NewReview = Omit<Review, "id">
 
@@ -30,139 +31,126 @@ export interface Interface {
   readonly releaseDelivery: (id: string) => Effect.Effect<void>
   /** the database answers */
   readonly ping: Effect.Effect<void, StoreError>
-  /** a consistent copy of the database at `path`, taken while it's in use */
-  readonly backup: (path: string) => Effect.Effect<void, StoreError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("glance/Store") {}
 
 export class StoreError extends Schema.TaggedError<StoreError>()("StoreError", { message: Schema.String }) {}
 
-const storeError = (cause: unknown) => new StoreError({ message: cause instanceof Error ? cause.message : String(cause) })
-
-interface Row {
-  readonly id: number
-  readonly repo: string
-  readonly number: number
-  readonly data: string
-}
-
 const decodeReview = Schema.decodeUnknownEffect(Review)
-const decodeSettings = Schema.decodeUnknownEffect(Schema.fromJsonString(Settings))
+const decodeSettings = Schema.decodeUnknownEffect(Settings)
 
-export const make = Effect.fn("Store.make")(function* (options: { readonly path: string; readonly defaults: Settings }) {
-  if (options.path !== ":memory:") mkdirSync(dirname(options.path), { recursive: true })
-  const db = new Database(options.path, { create: true, strict: true })
-  yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
-  db.run("PRAGMA journal_mode = WAL")
-  db.run("PRAGMA synchronous = NORMAL")
-  db.run(
-    "CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL)",
-  )
-  db.run("CREATE INDEX IF NOT EXISTS reviews_pr ON reviews (repo, number, id)")
-  db.run("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)")
-  db.run("CREATE TABLE IF NOT EXISTS panels (repo TEXT NOT NULL, number INTEGER NOT NULL, comment_id INTEGER NOT NULL, PRIMARY KEY (repo, number))")
-  db.run("CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, at INTEGER NOT NULL)")
-
-  const insert = db.query<{ id: number }, { repo: string; number: number; status: string; data: string }>(
-    "INSERT INTO reviews (repo, number, status, data) VALUES ($repo, $number, $status, $data) RETURNING id",
-  )
-  const write = db.query<never, { id: number; status: string; data: string }>("UPDATE reviews SET status = $status, data = $data WHERE id = $id")
-  const one = db.query<Row, { id: number }>("SELECT id, repo, number, data FROM reviews WHERE id = $id")
-  const recent = db.query<Row, { limit: number }>("SELECT id, repo, number, data FROM reviews ORDER BY id DESC LIMIT $limit")
-  const older = db.query<Row, { before: number; limit: number }>("SELECT id, repo, number, data FROM reviews WHERE id < $before ORDER BY id DESC LIMIT $limit")
-  const last = db.query<Row, { repo: string; number: number }>(
-    "SELECT id, repo, number, data FROM reviews WHERE repo = $repo AND number = $number AND status = 'done' ORDER BY id DESC LIMIT 1",
-  )
-  const running = db.query<Row, Record<string, never>>("SELECT id, repo, number, data FROM reviews WHERE status = 'running'")
-  const readSettings = db.query<{ data: string }, Record<string, never>>("SELECT data FROM settings WHERE id = 1")
-  const writeSettings = db.query<never, { data: string }>(
-    "INSERT INTO settings (id, data) VALUES (1, $data) ON CONFLICT (id) DO UPDATE SET data = excluded.data",
-  )
+export const make = Effect.fn("Store.make")(function* (options: { readonly defaults: Settings }) {
+  const db = yield* Database.Service
 
   // rows are written only by this module: a row that doesn't decode is a bug, not an input error
-  // reviews saved before depths existed ran at light; before dry runs were kept, they were posted
-  const toReview = (row: Row) => decodeReview({ depth: "light", dryRun: false, ...(JSON.parse(row.data) as object), id: row.id }).pipe(Effect.orDie)
-
-  const get = (id: number) =>
-    Effect.suspend(() => {
-      const row = one.get({ id })
-      return row ? toReview(row).pipe(Effect.map(Option.some)) : Effect.succeedNone
-    })
+  const toReview = (row: typeof reviews.$inferSelect) => decodeReview({ ...row.data, id: row.id }).pipe(Effect.orDie)
+  const toReviews = (rows: ReadonlyArray<typeof reviews.$inferSelect>) => Effect.forEach(rows, toReview)
+  const first = (rows: ReadonlyArray<typeof reviews.$inferSelect>) => (rows[0] ? toReview(rows[0]).pipe(Effect.map(Option.some)) : Effect.succeedNone)
 
   const create = Effect.fn("Store.create")(function* (review: NewReview) {
-    const row = insert.get({ repo: review.repo, number: review.number, status: review.status, data: JSON.stringify(review) })
+    const [row] = yield* db
+      .insert(reviews)
+      .values({ repo: review.repo, number: review.number, status: review.status, data: review })
+      .returning({ id: reviews.id })
+      .pipe(Effect.orDie)
     if (!row) return yield* Effect.die("insert returned no row")
     return { ...review, id: row.id }
   })
 
+  // the patch is merged in the database (jsonb ||): two fibers saving different fields of the same
+  // review can't overwrite each other's
   const update = Effect.fn("Store.update")(function* (id: number, patch: Partial<NewReview>) {
-    const current = yield* get(id).pipe(Effect.flatMap(Option.match({ onNone: () => Effect.die(`no review ${id}`), onSome: Effect.succeed })))
-    const next: Review = { ...current, ...patch, id }
-    write.run({ id, status: next.status, data: JSON.stringify(next) })
-    return next
+    const [row] = yield* db
+      .update(reviews)
+      .set({ data: sql`${reviews.data} || ${JSON.stringify(patch)}::jsonb`, ...(patch.status ? { status: patch.status } : {}) })
+      .where(eq(reviews.id, id))
+      .returning()
+      .pipe(Effect.orDie)
+    if (!row) return yield* Effect.die(`no review ${id}`)
+    return yield* toReview(row)
   })
 
-  const list = (limit: number) => Effect.suspend(() => Effect.forEach(recent.all({ limit }), toReview))
-  const listBefore = (before: number, limit: number) => Effect.suspend(() => Effect.forEach(older.all({ before, limit }), toReview))
+  const get = Effect.fn("Store.get")(function* (id: number) {
+    return yield* first(yield* db.select().from(reviews).where(eq(reviews.id, id)).pipe(Effect.orDie))
+  })
 
-  const lastDone = (repo: string, number: number) =>
-    Effect.suspend(() => {
-      const row = last.get({ repo, number })
-      return row ? toReview(row).pipe(Effect.map(Option.some)) : Effect.succeedNone
-    })
+  const list = Effect.fn("Store.list")(function* (limit: number) {
+    return yield* toReviews(yield* db.select().from(reviews).orderBy(desc(reviews.id)).limit(limit).pipe(Effect.orDie))
+  })
 
-  const interrupted = Effect.suspend(() => Effect.forEach(running.all({}), toReview))
+  const listBefore = Effect.fn("Store.listBefore")(function* (before: number, limit: number) {
+    return yield* toReviews(yield* db.select().from(reviews).where(lt(reviews.id, before)).orderBy(desc(reviews.id)).limit(limit).pipe(Effect.orDie))
+  })
 
-  const settings = Effect.suspend(() => {
-    const row = readSettings.get({})
-    if (!row) return Effect.succeed(options.defaults)
+  const lastDone = Effect.fn("Store.lastDone")(function* (repo: string, number: number) {
+    return yield* first(
+      yield* db
+        .select()
+        .from(reviews)
+        .where(and(eq(reviews.repo, repo), eq(reviews.number, number), eq(reviews.status, "done")))
+        .orderBy(desc(reviews.id))
+        .limit(1)
+        .pipe(Effect.orDie),
+    )
+  })
+
+  const interrupted = db.select().from(reviews).where(eq(reviews.status, "running")).pipe(Effect.orDie, Effect.flatMap(toReviews))
+
+  const settings = Effect.gen(function* () {
+    const [row] = yield* db.select().from(settingsTable).where(eq(settingsTable.id, 1)).pipe(Effect.orDie)
+    if (!row) return options.defaults
     // settings saved by an older version: keep what still decodes, default the rest
-    return decodeSettings(row.data).pipe(
-      Effect.catch(() => decodeSettings(JSON.stringify({ ...options.defaults, ...(JSON.parse(row.data) as object) }))),
+    return yield* decodeSettings(row.data).pipe(
+      Effect.catch(() => decodeSettings({ ...options.defaults, ...row.data })),
       Effect.orElseSucceed(() => options.defaults),
     )
   })
 
-  const saveSettings = (next: Settings) =>
-    Effect.sync(() => {
-      writeSettings.run({ data: JSON.stringify(next) })
-      return next
-    })
+  const saveSettings = Effect.fn("Store.saveSettings")(function* (next: Settings) {
+    yield* db
+      .insert(settingsTable)
+      .values({ id: 1, data: next })
+      .onConflictDoUpdate({ target: settingsTable.id, set: { data: next } })
+      .pipe(Effect.orDie)
+    return next
+  })
 
-  const readPanel = db.query<{ comment_id: number }, { repo: string; number: number }>("SELECT comment_id FROM panels WHERE repo = $repo AND number = $number")
-  const writePanel = db.query<never, { repo: string; number: number; commentId: number }>(
-    "INSERT INTO panels (repo, number, comment_id) VALUES ($repo, $number, $commentId) ON CONFLICT (repo, number) DO UPDATE SET comment_id = excluded.comment_id",
-  )
+  const panel = Effect.fn("Store.panel")(function* (repo: string, number: number) {
+    const [row] = yield* db
+      .select({ commentId: panels.commentId })
+      .from(panels)
+      .where(and(eq(panels.repo, repo), eq(panels.number, number)))
+      .pipe(Effect.orDie)
+    return Option.fromNullishOr(row?.commentId)
+  })
 
-  const panel = (repo: string, number: number) => Effect.sync(() => Option.fromNullishOr(readPanel.get({ repo, number })?.comment_id))
-  const savePanel = (repo: string, number: number, commentId: number) => Effect.sync(() => void writePanel.run({ repo, number, commentId }))
+  const savePanel = Effect.fn("Store.savePanel")(function* (repo: string, number: number, commentId: number) {
+    yield* db
+      .insert(panels)
+      .values({ repo, number, commentId })
+      .onConflictDoUpdate({ target: [panels.repo, panels.number], set: { commentId } })
+      .pipe(Effect.orDie)
+  })
 
-  const insertDelivery = db.query<{ id: string }, { id: string; at: number }>(
-    "INSERT INTO deliveries (id, at) VALUES ($id, $at) ON CONFLICT (id) DO NOTHING RETURNING id",
-  )
-  const pruneDeliveries = db.query<never, { before: number }>("DELETE FROM deliveries WHERE at < $before")
   // github lets a delivery be redelivered for a few days: a month of ids is plenty
-  const claimDelivery = (id: string) =>
-    Effect.sync(() => {
-      const now = Date.now()
-      pruneDeliveries.run({ before: now - 30 * 24 * 3600 * 1000 })
-      return insertDelivery.get({ id, at: now }) !== null
-    })
+  const claimDelivery = Effect.fn("Store.claimDelivery")(function* (id: string) {
+    yield* db
+      .delete(deliveries)
+      .where(lt(deliveries.at, sql`now() - interval '30 days'`))
+      .pipe(Effect.orDie)
+    const claimed = yield* db.insert(deliveries).values({ id }).onConflictDoNothing().returning({ id: deliveries.id }).pipe(Effect.orDie)
+    return claimed.length > 0
+  })
 
-  const deleteDelivery = db.query<never, { id: string }>("DELETE FROM deliveries WHERE id = $id")
-  const releaseDelivery = (id: string) => Effect.sync(() => void deleteDelivery.run({ id }))
+  const releaseDelivery = Effect.fn("Store.releaseDelivery")(function* (id: string) {
+    yield* db.delete(deliveries).where(eq(deliveries.id, id)).pipe(Effect.orDie)
+  })
 
-  const ping = Effect.try({ try: () => void db.query("SELECT 1").get(), catch: storeError })
-
-  const backup = (path: string) =>
-    Effect.try({
-      try: () => {
-        mkdirSync(dirname(path), { recursive: true })
-        db.run("VACUUM INTO ?", [path])
-      },
-      catch: storeError,
-    })
+  const ping = db.execute(sql`select 1`).pipe(
+    Effect.asVoid,
+    Effect.mapError((e) => new StoreError({ message: e.message })),
+  )
 
   return Service.of({
     create,
@@ -179,10 +167,9 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly path:
     claimDelivery,
     releaseDelivery,
     ping,
-    backup,
   })
 })
 
-export const layer = (options: { readonly path: string; readonly defaults: Settings }) => Layer.effect(Service, make(options))
+export const layer = (options: { readonly defaults: Settings }) => Layer.effect(Service, make(options))
 
 export * as Store from "./store.ts"

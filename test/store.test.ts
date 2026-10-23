@@ -1,10 +1,7 @@
 import { expect, test } from "bun:test"
 import { createVerify, generateKeyPairSync } from "node:crypto"
-import { existsSync, mkdtempSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Schedule } from "effect"
+import { Effect, Layer, Option, Schedule } from "effect"
 import type { PrRef } from "../src/domain.ts"
 import { appJwt } from "../src/github.ts"
 import { Reviewer } from "../src/reviewer.ts"
@@ -42,10 +39,20 @@ test("pages of older reviews, newest first", async () => {
   expect(pages).toEqual([[5, 4], [3, 2], [1]])
 })
 
-test("a backup is a database file taken while the database is open", async () => {
-  const path = join(mkdtempSync(join(tmpdir(), "glance-")), "nested", "backup.db")
-  await withStore((store) => Effect.andThen(store.create(review()), store.backup(path)))
-  expect(existsSync(path)).toBe(true)
+test("saves of different fields don't overwrite each other; a comment id past 2^31 comes back whole", async () => {
+  const [saved, panel] = await withStore((store) =>
+    Effect.gen(function* () {
+      const { id } = yield* store.create(review({ status: "running" }))
+      yield* Effect.all([store.update(id, { files: 7 }), store.update(id, { summary: "s" }), store.update(id, { status: "done" })], {
+        concurrency: "unbounded",
+      })
+      yield* store.savePanel("o/r", 1, 1)
+      yield* store.savePanel("o/r", 1, 3_000_000_000)
+      return [yield* store.get(id), yield* store.panel("o/r", 1)]
+    }),
+  )
+  expect(Option.map(saved, (r) => [r.files, r.summary, r.status])).toEqual(Option.some([7, "s", "done"]))
+  expect(panel).toEqual(Option.some(3_000_000_000))
 })
 
 test("an app's jwt is signed with its key and names the app", () => {

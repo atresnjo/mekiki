@@ -1,11 +1,12 @@
-import { Config, Option } from "effect"
+import { Config, Option, Redacted } from "effect"
 import type { Settings } from "./domain.ts"
 
 /** everything read from the environment, once, at startup */
 export const AppConfig = Config.all({
   port: Config.Port("PORT").pipe(Config.withDefault(7420)),
   host: Config.String("HOST").pipe(Config.withDefault("127.0.0.1")),
-  dbPath: Config.String("GLANCE_DB").pipe(Config.withDefault(".data/glance.db")),
+  /** postgres. the default is the one the readme starts for development */
+  databaseUrl: Config.Redacted("DATABASE_URL").pipe(Config.withDefault(Redacted.make("postgres://glance:glance@127.0.0.1:5432/glance"))),
   /**
    * the access token the dashboard is signed in with. GLANCE_TOKEN_FILE is read again every
    * half minute, so the token can be rotated without a restart; rotating it signs everyone out
@@ -48,13 +49,6 @@ export const AppConfig = Config.all({
     maxFileChars: Config.Int("MAX_FILE_CHARS").pipe(Config.withDefault(80_000)),
     chunkChars: Config.Int("CHUNK_CHARS").pipe(Config.withDefault(150_000)),
     concurrency: Config.Int("AGENT_CONCURRENCY").pipe(Config.withDefault(4)),
-  }),
-  /** snapshots of the database, beside it unless told otherwise. copy them off the machine too */
-  backups: Config.all({
-    dir: Config.String("GLANCE_BACKUPS").pipe(Config.withDefault(".data/backups")),
-    /** 0: no backups */
-    everyHours: Config.Int("GLANCE_BACKUP_HOURS").pipe(Config.withDefault(24)),
-    keep: Config.Int("GLANCE_BACKUP_KEEP").pipe(Config.withDefault(7)),
   }),
   observability: Config.all({
     /** json in production (one object per line, for a log collector), pretty while developing */

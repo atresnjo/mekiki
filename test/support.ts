@@ -1,9 +1,13 @@
 // what the tests share: config from an env record, and stand-ins for the services that reach out
 // (github, the agent clis, the review pipeline), each recording what it was asked
+import { PgliteClient } from "@effect/sql-pglite"
+import * as PgliteDrizzle from "drizzle-orm/effect-pglite"
+import { migrate } from "drizzle-orm/effect-pglite/migrator"
 import { ConfigProvider, Effect, Layer, PubSub, Stream } from "effect"
 import { Agent } from "../src/agent.ts"
 import { Checkout } from "../src/checkout.ts"
 import { AppConfig } from "../src/config.ts"
+import { Database } from "../src/database.ts"
 import { GitHubError, type PrRef, type Review } from "../src/domain.ts"
 import { GitHub } from "../src/github.ts"
 import { Health } from "../src/health.ts"
@@ -15,7 +19,7 @@ export const configFrom = (env: Record<string, string>) =>
   Effect.runSync(
     Effect.gen(function* () {
       return yield* AppConfig
-    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ GLANCE_DB: ":memory:", ...env })))),
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env)))),
   )
 
 export const review = (overrides: Partial<Review> = {}): Omit<Review, "id"> => ({
@@ -110,4 +114,14 @@ export const fakePanel = (shown: Array<{ readonly pr: PrRef; readonly kind: stri
 
 export const fakeCheckout = Layer.succeed(Checkout.Service, Checkout.Service.of({ at: () => Effect.succeed("/tmp/nowhere") }))
 
-export const memoryStore = (config: AppConfig) => Store.layer({ path: ":memory:", defaults: config.defaults })
+/** a fresh postgres for each layer built, in-process (pglite): the real migrations and the real queries */
+export const memoryDatabase = Layer.effect(
+  Database.Service,
+  Effect.gen(function* () {
+    const db = yield* PgliteDrizzle.makeWithDefaults()
+    yield* migrate(db, { migrationsFolder: Database.MIGRATIONS })
+    return db
+  }),
+).pipe(Layer.provide(PgliteClient.layer()), Layer.orDie)
+
+export const memoryStore = (config: AppConfig) => Store.layer({ defaults: config.defaults }).pipe(Layer.provide(memoryDatabase))

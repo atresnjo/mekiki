@@ -3,7 +3,6 @@ import { BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import * as App from "./app.ts"
-import { Backup } from "./backup.ts"
 import { AppConfig } from "./config.ts"
 import { Health } from "./health.ts"
 import * as Http from "./http.ts"
@@ -15,7 +14,7 @@ const Main = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* AppConfig
     const Routes = Layer.mergeAll(Http.routes(config), Rpc.routes(config), Session.routes(config), Health.routes)
-    const Services = Layer.mergeAll(Health.layer, Session.layer(config), Backup.layer(config.backups)).pipe(Layer.provideMerge(App.layer(config)))
+    const Services = Layer.mergeAll(Health.layer, Session.layer(config)).pipe(Layer.provideMerge(App.layer(config)))
     return HttpRouter.serve(Routes).pipe(
       Layer.provide(Services),
       // the review stream's heartbeat keeps its connection busier than this

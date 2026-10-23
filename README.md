@@ -34,18 +34,22 @@ If the code can't be fetched at all (git and the tarball both fail, or the tarba
 bun install
 claude          # once: log in to Claude Code (or `codex login`)
 gh auth login   # or set GITHUB_TOKEN
+# postgres: any will do (set DATABASE_URL); this one matches the default
+docker run -d --name glance-postgres -e POSTGRES_USER=glance -e POSTGRES_PASSWORD=glance -e POSTGRES_DB=glance -p 127.0.0.1:5432:5432 postgres:18-alpine
 bun dev         # api on http://127.0.0.1:7420, dashboard on http://localhost:7421
 ```
+
+The server brings the database up to date when it starts: the migrations in `drizzle/` it hasn't applied yet run first. After changing `src/schema.ts`, `bun db:generate` writes the next one. The tests run on an in-process Postgres (PGlite) and need no database.
 
 The server is the api only (Effect RPC at `/api/rpc`, http + ndjson, and the webhook); it doesn't serve the dashboard. `web/` is a plain Vite + TanStack Router app: `bun dev:web` runs it alone, `bun run build` writes `web/dist` for any static host. The dashboard calls the api on its own origin: Vite forwards `/api/` to it (`GLANCE_API_URL`, default `http://127.0.0.1:7420`); in production a reverse proxy does the same.
 
 ## Deploy on a VPS
 
-Docker Compose runs two containers: `glance` (the api, git, and the `claude` and `codex` CLIs) and `web` (Caddy: the built dashboard, `/api/` forwarded to glance, https from Let's Encrypt). Only Caddy is reachable from outside.
+Docker Compose runs three containers: `glance` (the api, git, and the `claude` and `codex` CLIs), `postgres`, and `web` (Caddy: the built dashboard, `/api/` forwarded to glance, https from Let's Encrypt). Only Caddy is reachable from outside.
 
 ```bash
 git clone <this repo> glance && cd glance
-cp .env.example .env    # set GLANCE_DOMAIN, GLANCE_TOKEN, GITHUB_WEBHOOK_SECRET, and a GitHub app or token
+cp .env.example .env    # set GLANCE_DOMAIN, POSTGRES_PASSWORD, GLANCE_TOKEN, GITHUB_WEBHOOK_SECRET, and a GitHub app or token
 docker compose up -d --build
 docker compose logs -f glance
 ```
@@ -60,7 +64,7 @@ docker compose logs -f glance
 3. **GitHub:** a GitHub App is best: its own rate limits, comments under its name, and access only to the repositories it's installed on. Give it read access to contents and write access to pull requests and issues, subscribe it to **Pull requests** and **Issue comments**, and set its webhook to `https://<domain>/api/webhooks/github` with `GITHUB_WEBHOOK_SECRET`. Set `GITHUB_APP_ID` and either `GITHUB_APP_PRIVATE_KEY` (newlines as `\n`) or `GITHUB_APP_PRIVATE_KEY_FILE` (mount the `.pem` into the container). A personal token (`GITHUB_TOKEN`) works too, with a repository or organization webhook.
 4. **Sign in:** open `https://<domain>` and enter `GLANCE_TOKEN`.
 
-Everything glance keeps is in the `glance-data` volume: the database, its daily backups (`/data/backups`, the last 7), the checkouts and Codex's login. The backups sit on the same disk, so copy them off the machine (restic, rclone, a provider snapshot). To update, `git pull && docker compose up -d --build`. A stop or restart leaves running reviews to the next start, which reviews them again if they're less than an hour old.
+The database is in the `postgres-data` volume; the checkouts and Codex's login are in `glance-data`. glance takes no backups of its own: dump the database off the machine on a schedule (`docker compose exec -T postgres pg_dump -U glance -Fc glance > glance.dump`, then restic, rclone, or a provider snapshot). To update, `git pull && docker compose up -d --build`. A stop or restart leaves running reviews to the next start, which reviews them again if they're less than an hour old.
 
 Pin the CLIs with `--build-arg CLAUDE_CODE_VERSION=… --build-arg CODEX_VERSION=…` (in `docker-compose.yml` under `build.args`); by default each build takes the latest.
 
@@ -107,7 +111,7 @@ glance always strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and friends from the 
 
 ## Configuration
 
-Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in SQLite (`GLANCE_DB`).
+Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in Postgres (`DATABASE_URL`).
 
 Set `GLANCE_TOKEN` before exposing glance. The dashboard asks for it once per browser and exchanges it at `POST /api/session` for an HTTP-only session cookie (30 days, `GLANCE_SESSION_DAYS`), which every rpc call then carries. The cookie is an expiry signed with the token, so changing the token signs everyone out. With `GLANCE_TOKEN_FILE` instead, the file is read again every 30 seconds, so the token rotates without a restart. Sign-in attempts are limited to 10 per 15 minutes per client. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
 
@@ -126,12 +130,13 @@ src/
   github.ts     REST client (Effect HttpClient)
   diff.ts       diff parsing, file selection, chunking, line anchoring (pure)
   prompt.ts     system and review prompts
-  store.ts      bun:sqlite
+  store.ts      reviews, settings, comments, deliveries: drizzle queries
+  database.ts   postgres (drizzle on @effect/sql-pg), migrated at startup
+  schema.ts     the tables; drizzle/ holds their migrations
   rpc.ts        the dashboard's api: one Effect RPC group, shared with web/ (as @glance/api)
   rpc-server.ts its handlers, and the session middleware
   session.ts    sign-in: the access token for a signed session cookie, attempts limited
   health.ts     /api/health, and the monitor that logs when an agent stops working
-  backup.ts     database snapshots
   observability.ts  json logs, otlp
   http.ts       webhook
 web/            the dashboard: Vite, TanStack Router (file routes in src/routes), Kumo

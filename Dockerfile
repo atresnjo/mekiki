@@ -40,13 +40,13 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY src src
-# everything glance keeps (database, backups, checkouts, codex's login) lives in /data: one volume
+# applied at startup: the database is brought up to date before anything else runs
+COPY drizzle drizzle
+# what glance keeps on disk (checkouts, codex's login) lives in /data: one volume. the database is postgres
 RUN mkdir -p /data/codex && chown -R bun:bun /data
 USER bun
 ENV HOST=0.0.0.0 \
     PORT=7420 \
-    GLANCE_DB=/data/glance.db \
-    GLANCE_BACKUPS=/data/backups \
     GLANCE_CHECKOUTS=/data/checkouts \
     CODEX_HOME=/data/codex \
     GLANCE_LOG_FORMAT=json \
