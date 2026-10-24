@@ -14,6 +14,10 @@ export const PullRequest = Schema.Struct({
 })
 export interface PullRequest extends Schema.Schema.Type<typeof PullRequest> {}
 
+/** what someone may do in a repository, least to most */
+export type Permission = "none" | "read" | "triage" | "write" | "maintain" | "admin"
+const PERMISSIONS: ReadonlyArray<Permission> = ["none", "read", "triage", "write", "maintain", "admin"]
+
 export interface ReviewComment {
   readonly path: string
   readonly line: number
@@ -40,6 +44,8 @@ export interface Interface {
   readonly updateComment: (pr: PrRef, id: number, body: string) => Effect.Effect<void, GitHubError>
   /** 👀 on a comment: the command was seen */
   readonly acknowledge: (pr: PrRef, commentId: number) => Effect.Effect<void, GitHubError>
+  /** someone's permission on the pull request's repository: none when they aren't a collaborator */
+  readonly permission: (pr: PrRef, login: string) => Effect.Effect<Permission, GitHubError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
@@ -59,6 +65,7 @@ export interface Options {
 const decodePullRequest = Schema.decodeUnknownEffect(PullRequest)
 const decodeComment = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
 const decodeInstallation = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
+const decodePermission = Schema.decodeUnknownEffect(Schema.Struct({ permission: Schema.String, role_name: Schema.optional(Schema.String) }))
 const decodeAccessToken = Schema.decodeUnknownEffect(Schema.Struct({ token: Schema.String, expires_at: Schema.String }))
 
 /** what an app proves it's the app with: a jwt signed with its private key, good for ten minutes */
@@ -261,6 +268,26 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
     )
   })
 
+  const permission = Effect.fn("GitHub.permission")(function* (pr: PrRef, login: string): Effect.fn.Return<Permission, GitHubError> {
+    const response = yield* send(
+      reader,
+      "permission",
+      pr,
+      HttpClientRequest.get(`${path(pr)}/collaborators/${encodeURIComponent(login)}/permission`).pipe(HttpClientRequest.acceptJson),
+    ).pipe(
+      Effect.map(Option.some),
+      // not a collaborator (or not a user at all)
+      Effect.catchIf(
+        (e) => e.status === 404,
+        () => Effect.succeedNone,
+      ),
+    )
+    if (Option.isNone(response)) return "none"
+    const body = yield* json("permission", response.value, decodePermission)
+    // role_name tells triage and maintain apart; permission folds them into read and write
+    return PERMISSIONS.find((p) => p === body.role_name) ?? PERMISSIONS.find((p) => p === body.permission) ?? "none"
+  })
+
   // github.com's api lives on api.github.com; enterprise's under /api/v3 of the same host
   const webUrl = options.apiUrl === "https://api.github.com" ? "https://github.com" : options.apiUrl.replace(/\/api\/v3\/?$/, "")
   const gitRemote = (pr: PrRef) =>
@@ -269,7 +296,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       authorization: Redacted.make(`Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`),
     }))
 
-  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge })
+  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge, permission })
 })
 
 export const layer = (options: Options) => Layer.effect(Service, make(options)).pipe(Layer.provide(FetchHttpClient.layer))

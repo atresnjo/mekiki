@@ -2,7 +2,7 @@
 // ticking one edits the comment, github sends `issue_comment.edited`, and the review starts.
 // glance only ever writes the boxes unticked, so a ticked box is always a person asking
 import { Context, Effect, Layer, Option, Semaphore } from "effect"
-import type { Depth, PrRef, Review } from "./domain.ts"
+import { type Depth, partial, type PrRef, type Review } from "./domain.ts"
 import { GitHub } from "./github.ts"
 import { Store } from "./store.ts"
 
@@ -38,6 +38,11 @@ const status = (state: State): readonly [string, string] => {
       if (r.status !== "done") return [`The **${label(r.depth)}** review was ${r.status}.${stale}`, "Review at:"]
       const seconds = ((r.durationMs ?? 0) / 1000).toFixed(1)
       const issues = r.findings.length === 0 ? "no issues found" : `**${r.findings.length} issue${r.findings.length === 1 ? "" : "s"}** in the review below`
+      if (partial(r))
+        return [
+          `⚠️ **Partly reviewed** ${short(r.headSha)} at **${label(r.depth)}**: ${r.unreviewed.length} of ${r.files} file${r.files === 1 ? "" : "s"} couldn't be reviewed, ${issues} in the rest.${stale}`,
+          "Try again at:",
+        ]
       return [
         `✅ Reviewed ${short(r.headSha)} at **${label(r.depth)}** in ${seconds}s: ${issues}.${stale}`,
         stale ? "Review the new commits at:" : "Review again at:",

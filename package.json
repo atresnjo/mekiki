@@ -18,8 +18,10 @@
     "fmt:check": "oxfmt --check"
   },
   "dependencies": {
+    "@better-auth/sso": "1.7.10",
     "@effect/platform-bun": "4.0.5",
     "@effect/sql-pg": "4.0.5",
+    "better-auth": "1.7.10",
     "drizzle-orm": "1.0.0-rc.5",
     "effect": "4.0.5"
   },
@@ -27,6 +29,7 @@
     "@cloudflare/kumo": "^2.14.0",
     "@effect/atom-react": "4.0.5",
     "@effect/sql-pglite": "4.0.5",
+    "@electric-sql/pglite": "0.5.10",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/react-router": "^1.170.44",

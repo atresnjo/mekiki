@@ -60,18 +60,47 @@ export const Options = Schema.Struct({
 })
 export interface Options extends Schema.Schema.Type<typeof Options> {}
 
-// a key in the environment beats the subscription login in both CLIs: drop it so reviews always
-// bill the subscription. CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) and CODEX_HOME pass through
-const API_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"]
+/**
+ * what a child process (an agent cli, git, tar) is given of glance's environment: an allowlist, so
+ * nothing glance holds (the database url, github's credentials, better auth's secret) reaches a
+ * process that reads untrusted code. API keys aren't on it either: a key beats the subscription
+ * login in both CLIs, and reviews always bill the subscription
+ */
+const SYSTEM = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TZ", "TERM"]
+const NETWORK = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]
+/** where each cli keeps its login and settings: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) is the login itself */
+const AGENTS = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+]
 
-const childEnv = (): Record<string, string> => {
+const allowed = new Set([...SYSTEM, ...NETWORK])
+const pick = (from: Record<string, string | undefined>, keep: (key: string) => boolean) => {
   const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !API_KEYS.includes(key)) env[key] = value
-  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
-  env.DISABLE_AUTOUPDATER = "1"
-  env.NO_COLOR = "1"
+  for (const [key, value] of Object.entries(from)) if (value !== undefined && keep(key)) env[key] = value
   return env
 }
+
+/** what any child process gets: the allowed part of `from` (glance's own environment by default), with `extra` on top */
+export const childEnv = (extra: Record<string, string> = {}, from: Record<string, string | undefined> = process.env): Record<string, string> => ({
+  ...pick(from, (key) => allowed.has(key) || key.startsWith("LC_")),
+  ...extra,
+})
+
+/** what an agent cli gets: that, and its own login */
+export const agentEnv = (from: Record<string, string | undefined> = process.env): Record<string, string> => ({
+  ...childEnv({}, from),
+  ...pick(from, (key) => AGENTS.includes(key)),
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  DISABLE_AUTOUPDATER: "1",
+  NO_COLOR: "1",
+})
 
 /** what both CLIs accept as an output schema: closed objects, every key required */
 const jsonSchema = (() => {
@@ -99,7 +128,7 @@ const decodeReviewJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChunkR
 export const make = Effect.fn("Agent.make")(function* (options: Options) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const fs = yield* FileSystem.FileSystem
-  const env = childEnv()
+  const env = agentEnv()
 
   const fail = (agent: AgentKind) => (message: string) => new AgentError({ agent, message })
 

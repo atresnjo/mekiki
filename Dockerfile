@@ -16,9 +16,10 @@ RUN bun run build
 
 # ---------- the agent clis: installed with npm, kept as the native binaries they are ----------
 FROM node:22-bookworm-slim AS clis
-# pinned with --build-arg; latest by default, since both clis move fast and old ones lose model access
-ARG CLAUDE_CODE_VERSION=latest
-ARG CODEX_VERSION=latest
+# pinned: the versions the release was tested with (scripts/isolation-check.ts, docs/operations.md).
+# both clis move fast and old ones lose model access: bump them on purpose, and test again
+ARG CLAUDE_CODE_VERSION=2.1.309
+ARG CODEX_VERSION=0.163.0
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
  && root="$(npm root -g)" \
  # claude: one self-contained binary (npm also brings a musl build, unused here)
@@ -40,12 +41,16 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY src src
+# the isolation check, run on this image before a release
+COPY scripts scripts
 # applied at startup: the database is brought up to date before anything else runs
 COPY drizzle drizzle
 # what glance keeps on disk (checkouts, codex's login) lives in /data: one volume. the database is postgres
 RUN mkdir -p /data/codex && chown -R bun:bun /data
 USER bun
-ENV HOST=0.0.0.0 \
+# production: glance refuses to start until signing in is set up
+ENV GLANCE_ENV=production \
+    HOST=0.0.0.0 \
     PORT=7420 \
     GLANCE_CHECKOUTS=/data/checkouts \
     CODEX_HOME=/data/codex \

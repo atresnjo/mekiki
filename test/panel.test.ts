@@ -24,6 +24,7 @@ const review: Review = {
   durationMs: 12_300,
   summary: "s",
   findings: [],
+  unreviewed: [],
   steps: [],
   error: null,
 }
@@ -61,4 +62,11 @@ test("renders every state with unticked boxes and no command glance would answer
   expect(states[2]).toContain("✅ Reviewed `abcdef1` at **Light** in 12.3s: no issues found.")
   expect(states[3]).toContain("🔁 New commits since: `abcdef1` → `9999999`.")
   expect(states[4]).toContain("❌ The **Light** review failed: boom")
+})
+
+test("a partial review says so instead of 'no issues found'", () => {
+  const body = render({ kind: "finished", review: { ...review, files: 3, unreviewed: ["a.ts"], error: "1 of 2 chunks failed" } })
+  expect(body).toContain("Partly reviewed")
+  expect(body).toContain("1 of 3 files couldn't be reviewed")
+  expect(body).not.toContain("✅")
 })

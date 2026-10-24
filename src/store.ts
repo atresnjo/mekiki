@@ -16,7 +16,7 @@ export interface Interface {
   readonly list: (limit: number) => Effect.Effect<ReadonlyArray<Review>>
   /** the reviews older than `before`, newest first: the pages after the first */
   readonly listBefore: (before: number, limit: number) => Effect.Effect<ReadonlyArray<Review>>
-  /** the last finished review of a pull request: where an incremental review starts from */
+  /** the last finished review of a pull request that covered all of it: where an incremental review starts from */
   readonly lastDone: (repo: string, number: number) => Effect.Effect<Option.Option<Review>>
   /** reviews still marked running: left by a process that stopped or died mid-review */
   readonly interrupted: Effect.Effect<ReadonlyArray<Review>>
@@ -88,7 +88,15 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
       yield* db
         .select()
         .from(reviews)
-        .where(and(eq(reviews.repo, repo), eq(reviews.number, number), eq(reviews.status, "done")))
+        // a partial review left files unreviewed: the next one starts from before it, so they're looked at
+        .where(
+          and(
+            eq(reviews.repo, repo),
+            eq(reviews.number, number),
+            eq(reviews.status, "done"),
+            sql`coalesce(jsonb_array_length(${reviews.data} -> 'unreviewed'), 0) = 0`,
+          ),
+        )
         .orderBy(desc(reviews.id))
         .limit(1)
         .pipe(Effect.orDie),

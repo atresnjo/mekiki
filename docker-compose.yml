@@ -2,13 +2,21 @@
 # (point its dns here first) and forwards /api/ to glance, which isn't reachable from outside
 services:
   glance:
-    build: { context: ., target: server }
+    build:
+      context: .
+      target: server
+      # the versions this release was tested with: bump on purpose (docs/operations.md)
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.309}
+        CODEX_VERSION: ${CODEX_VERSION:-0.163.0}
     restart: unless-stopped
     # the agent clis start processes of their own: an init reaps them
     init: true
     env_file: .env
     # what the setup depends on: not overridable from .env
     environment:
+      GLANCE_ENV: production
+      BETTER_AUTH_URL: https://${GLANCE_DOMAIN:?set GLANCE_DOMAIN in .env}
       HOST: 0.0.0.0
       PORT: "7420"
       DATABASE_URL: postgres://glance:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/glance
@@ -24,6 +32,17 @@ services:
         condition: service_healthy
     # a stop leaves running reviews to the next start, which takes them up again
     stop_grace_period: 30s
+    # the agents read untrusted code and can be greedy: they get this much of the machine, no more.
+    # AGENT_CONCURRENCY agents run at once, each a few hundred MB
+    deploy:
+      resources:
+        limits:
+          cpus: "${GLANCE_CPUS:-2}"
+          memory: ${GLANCE_MEMORY:-4g}
+          pids: 1024
+    logging: &logs
+      driver: json-file
+      options: { max-size: 20m, max-file: "5" }
 
   # reachable only from glance, on the compose network
   postgres:
@@ -40,6 +59,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 1g }
+    logging: *logs
 
   web:
     build: { context: ., target: web }
@@ -55,6 +78,10 @@ services:
       - caddy-config:/config
     depends_on:
       - glance
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 256m }
+    logging: *logs
 
 volumes:
   glance-data:

@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 export const AgentKind = Schema.Literals(["claude", "codex"])
 export type AgentKind = typeof AgentKind.Type
@@ -85,6 +85,11 @@ export const Review = Schema.Struct({
   durationMs: Schema.NullOr(Schema.Finite),
   summary: Schema.String,
   findings: Schema.Array(Finding),
+  /**
+   * the files of the chunks whose agent failed: a review with any is partial. it says so on github,
+   * and the next one doesn't start from it. reviews saved before this was kept have none
+   */
+  unreviewed: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   steps: Schema.Array(Step),
   error: Schema.NullOr(Schema.String),
 })
@@ -114,3 +119,6 @@ export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError"
   status: Schema.optional(Schema.Finite),
   message: Schema.String,
 }) {}
+
+/** finished, but some of it couldn't be reviewed */
+export const partial = (review: Pick<Review, "status" | "unreviewed">) => review.status === "done" && review.unreviewed.length > 0

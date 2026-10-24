@@ -4,20 +4,28 @@
 // each repository is a bare git repo kept between reviews, holding the file contents it has seen.
 // a commit is fetched without contents (commit and trees: small), then only the files not already
 // on disk come down, in one batch: a push that changes 3 files downloads 3 files. if git fails,
-// the commit's tarball is streamed into tar instead
-import { Cache, Context, Duration, Effect, Exit, FileSystem, Layer, Option, Redacted, Ref, Schema, Semaphore, Stream } from "effect"
+// the commit's tarball is streamed into tar instead.
+//
+// bounded: a download gives up after `timeout`, git may write no more than `maxMegabytes` (the
+// tarball may download no more), and everything here together stays under `diskBudgetMegabytes`
+import { Cache, Context, Duration, Effect, Exit, FileSystem, Layer, Option, Redacted, Ref, Schedule, Schema, Semaphore, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { PrRef } from "./domain.ts"
+import { childEnv } from "./agent.ts"
 import { GitHub } from "./github.ts"
 
 export class CheckoutError extends Schema.TaggedError<CheckoutError>()("CheckoutError", { message: Schema.String }) {}
 
 export interface Options {
   readonly dir: string
-  /** a repository whose tarball is bigger isn't downloaded */
+  /** a repository that needs more than this on disk (git) or to download (the tarball) isn't fetched */
   readonly maxMegabytes: number
   /** commits kept on disk */
   readonly keep: number
+  /** everything under `dir`: past it, the least recently used commits (then repositories) go */
+  readonly diskBudgetMegabytes: number
+  /** seconds one download may take, git's or the tarball's */
+  readonly timeout: number
 }
 
 export interface Interface {
@@ -42,6 +50,46 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
   const trees = `${options.dir}/trees`
   const target = ({ pr, sha }: Key) => `${trees}/${pr.owner}/${pr.repo}/${sha}`
   const bare = (pr: PrRef) => `${options.dir}/git/${pr.owner}/${pr.repo}.git`
+
+  /** kilobytes on disk under the paths that exist */
+  const kilobytes = (paths: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const existing = yield* Effect.filter(paths, (p) => fs.exists(p).pipe(Effect.orElseSucceed(() => false)))
+      if (existing.length === 0) return 0
+      const out = yield* run(ChildProcess.make("du", ["-sk", "-c", ...existing], { env: childEnv() }), "measuring the checkouts")
+      return Number(out.trim().split("\n").at(-1)?.split(/\s/)[0] ?? 0)
+    })
+
+  /**
+   * `effect`, stopped (and failed) once what it has written under `paths` grows past `maxMegabytes`:
+   * git has no size limit of its own, so it's watched from outside, every second, and once more at
+   * the end. `undo` cleans up what an oversized download left
+   */
+  const capped = <A>(effect: Effect.Effect<A, CheckoutError>, paths: ReadonlyArray<string>, undo: Effect.Effect<void> = Effect.void) =>
+    Effect.gen(function* () {
+      const before = yield* kilobytes(paths).pipe(Effect.orElseSucceed(() => 0))
+      let over = false
+      const check = kilobytes(paths).pipe(
+        Effect.orElseSucceed(() => before),
+        Effect.flatMap((now) => {
+          over = now - before > options.maxMegabytes * 1024
+          return over ? Effect.fail(fail(`the repository is over ${options.maxMegabytes} MB`)) : Effect.void
+        }),
+      )
+      const watch = check.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(1))), Effect.andThen(Effect.never))
+      // once the race is settled, git has stopped: only then is what it wrote removed
+      return yield* Effect.raceFirst(effect, watch).pipe(
+        Effect.tap(() => check),
+        Effect.tapError(() => (over ? undo : Effect.void)),
+      )
+    })
+
+  /** a download that takes longer than `timeout` is given up */
+  const timed = <A>(effect: Effect.Effect<A, CheckoutError>, what: string) =>
+    Effect.timeoutOrElse(effect, {
+      duration: Duration.seconds(options.timeout),
+      orElse: () => Effect.fail(fail(`${what} took longer than ${options.timeout}s`)),
+    })
 
   /** run to completion: its stdout */
   const run = (command: ChildProcess.Command, what: string) =>
@@ -79,9 +127,9 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     }
     const git = (args: ReadonlyArray<string>, what: string, more: { stdin?: string; env?: Record<string, string> } = {}) =>
       run(
+        // nothing of glance's environment beyond what git needs: no database url, no secrets
         ChildProcess.make("git", [...args], {
-          env: { ...env, ...more.env },
-          extendEnv: true,
+          env: childEnv({ ...env, ...more.env }),
           ...(more.stdin === undefined ? {} : { stdin: Stream.encodeText(Stream.make(more.stdin)) }),
         }),
         what,
@@ -89,6 +137,8 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
 
     yield* locked(repo)(
       Effect.gen(function* () {
+        // most recently used: the last to go when the disk budget is over
+        yield* fs.utimes(repo, new Date(), new Date()).pipe(Effect.ignore)
         if (!(yield* fs.exists(`${repo}/HEAD`).pipe(Effect.orElseSucceed(() => false)))) {
           yield* fs.makeDirectory(repo, { recursive: true }).pipe(Effect.mapError((e) => fail(e.message)))
           yield* git(["init", "-q", "--bare", repo], "git init")
@@ -115,14 +165,17 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
             },
           )
         yield* Effect.annotateCurrentSpan({ fetchedFiles: missing.length })
-      }),
+      }).pipe((fetching) =>
+        // too big: what came down is dropped with the repository, so it doesn't hold the disk
+        capped(fetching, [repo], fs.remove(repo, { recursive: true }).pipe(Effect.ignore)),
+      ),
     )
 
     // a separate index per checkout, so checkouts of the same repo don't share any state
     yield* fs.makeDirectory(into, { recursive: true }).pipe(Effect.mapError((e) => fail(e.message)))
     yield* git(["--git-dir", repo, "--work-tree", into, "-c", "core.symlinks=false", "checkout", "-q", "-f", key.sha, "--", "."], "git checkout", {
       env: { GIT_INDEX_FILE: `${into}.index` },
-    }).pipe(Effect.ensuring(fs.remove(`${into}.index`).pipe(Effect.ignore)))
+    }).pipe((checkingOut) => capped(checkingOut, [into]), Effect.ensuring(fs.remove(`${into}.index`).pipe(Effect.ignore)))
   })
 
   const viaTarball = Effect.fn("Checkout.viaTarball")(function* (key: Key, into: string) {
@@ -139,28 +192,57 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
       Stream.catchTag("CheckoutError", (e) => Stream.fromEffect(Ref.set(failure, Option.some(e))).pipe(Stream.drain)),
     )
     yield* fs.makeDirectory(into, { recursive: true }).pipe(Effect.mapError((e) => fail(e.message)))
-    const extracted = yield* run(ChildProcess.make("tar", ["-xzf", "-", "-C", into, "--strip-components=1"], { stdin: input }), "extracting the code").pipe(
-      Effect.exit,
-    )
+    const extracted = yield* run(
+      ChildProcess.make("tar", ["-xzf", "-", "-C", into, "--strip-components=1"], { env: childEnv(), stdin: input }),
+      "extracting the code",
+    ).pipe(Effect.exit)
     const failed = yield* Ref.get(failure)
     if (Option.isSome(failed)) return yield* failed.value
     if (Exit.isFailure(extracted)) return yield* extracted
     // a symlink in the repository could point the agent at files outside it
-    yield* run(ChildProcess.make("find", [into, "-type", "l", "-delete"]), "removing symlinks")
+    yield* run(ChildProcess.make("find", [into, "-type", "l", "-delete"], { env: childEnv() }), "removing symlinks")
     yield* Effect.annotateCurrentSpan({ bytes })
   })
 
+  // the least recently used commits past `keep` go; then, while everything together is over the
+  // disk budget, the least recently used commits and (once no commit is left of it) repositories
   const prune = Effect.gen(function* () {
     const dirs: Array<{ path: string; at: number }> = []
-    for (const owner of yield* fs.readDirectory(trees))
-      for (const repo of yield* fs.readDirectory(`${trees}/${owner}`))
-        for (const sha of yield* fs.readDirectory(`${trees}/${owner}/${repo}`)) {
+    const list = (dir: string) => fs.readDirectory(dir).pipe(Effect.orElseSucceed((): Array<string> => []))
+    const at = (path: string) => fs.stat(path).pipe(Effect.map((info) => Option.getOrElse(info.mtime, () => new Date(0)).getTime()))
+    for (const owner of yield* list(trees))
+      for (const repo of yield* list(`${trees}/${owner}`))
+        for (const sha of yield* list(`${trees}/${owner}/${repo}`)) {
           const path = `${trees}/${owner}/${repo}/${sha}`
-          const info = yield* fs.stat(path)
-          dirs.push({ path, at: Option.getOrElse(info.mtime, () => new Date(0)).getTime() })
+          // a checkout still being written
+          if (sha.includes(".part-")) continue
+          dirs.push({ path, at: yield* at(path) })
         }
-    const stale = dirs.sort((a, b) => b.at - a.at).slice(options.keep)
+    dirs.sort((a, b) => b.at - a.at)
+    const stale = dirs.splice(options.keep)
     yield* Effect.forEach(stale, (d) => fs.remove(d.path, { recursive: true }), { concurrency: 4, discard: true })
+
+    const budget = options.diskBudgetMegabytes * 1024
+    let used = yield* kilobytes([options.dir])
+    if (used <= budget) return
+    const repos: Array<{ path: string; at: number }> = []
+    for (const owner of yield* list(`${options.dir}/git`))
+      for (const repo of yield* list(`${options.dir}/git/${owner}`)) {
+        const path = `${options.dir}/git/${owner}/${repo}`
+        repos.push({ path, at: yield* at(path) })
+      }
+    repos.sort((a, b) => b.at - a.at)
+    // oldest first: commits before repositories, since a commit is quicker to fetch again
+    for (const victim of [...dirs.reverse(), ...repos.reverse()]) {
+      if (used <= budget) break
+      const size = yield* kilobytes([victim.path])
+      const remove = fs.remove(victim.path, { recursive: true })
+      // a repository is removed between fetches, never under one
+      yield* victim.path.endsWith(".git") ? locked(victim.path)(remove) : remove
+      used -= size
+      yield* Effect.logInfo(`the checkouts are over GLANCE_DISK_BUDGET_MB: removed ${victim.path}`)
+    }
+    if (used > budget) yield* Effect.logWarning(`the checkouts use ${Math.round(used / 1024)} MB, over GLANCE_DISK_BUDGET_MB, with nothing left to remove`)
   }).pipe(Effect.ignore)
 
   const fetch = (key: Key): Effect.Effect<string, CheckoutError> =>
@@ -179,8 +261,12 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
           Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : fs.remove(tmp, { recursive: true }).pipe(Effect.ignore))),
         )
       }
-      const tmp = yield* attempt(viaGit).pipe(
-        Effect.catch((e) => Effect.logWarning(`git checkout failed, downloading the tarball: ${e.message}`).pipe(Effect.andThen(attempt(viaTarball)))),
+      const tmp = yield* attempt((k, into) => timed(viaGit(k, into), "git")).pipe(
+        Effect.catch((e) =>
+          Effect.logWarning(`git checkout failed, downloading the tarball: ${e.message}`).pipe(
+            Effect.andThen(attempt((k, into) => timed(viaTarball(k, into), "downloading the tarball"))),
+          ),
+        ),
       )
       yield* fs.rename(tmp, dir).pipe(
         // another review of the same commit got there first

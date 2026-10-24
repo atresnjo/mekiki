@@ -20,6 +20,8 @@ export interface Limits {
   readonly chunkChars: number
   /** agent processes running at once, across all reviews */
   readonly concurrency: number
+  /** reviews running or waiting at once: another is turned away, and says so */
+  readonly maxQueued: number
 }
 
 export interface StartOptions {
@@ -106,14 +108,30 @@ export const commentBody = (f: Finding, agent: { readonly kind: AgentKind; reado
     .filter(Boolean)
     .join("\n\n")
 
-const reviewBody = (review: Review, skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>) => {
+export const reviewBody = (
+  review: Review,
+  skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>,
+  notes: { readonly failure?: string | undefined; readonly code?: string | undefined } = {},
+) => {
   const seconds = ((review.durationMs ?? 0) / 1000).toFixed(1)
-  const counts = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
-  const lines = [
-    `### glance`,
+  const missing = review.unreviewed.length
+  const found = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
+  // partial: "no issues" would claim more than was looked at
+  const counts = missing > 0 ? `${found} in the files reviewed` : found
+  const lines = [`### glance`]
+  if (missing > 0)
+    lines.push(
+      `> [!WARNING]\n> **Partial review: ${missing} of ${review.files} file${review.files === 1 ? "" : "s"} couldn't be reviewed**${notes.failure ? ` (${notes.failure.slice(0, 200)})` : ""}. Tick a depth in glance's comment to try again.`,
+    )
+  lines.push(
     review.summary,
-    `**${counts}** · ${review.files} file${review.files === 1 ? "" : "s"} in ${seconds}s · ${review.agent}${review.model ? ` ${review.model}` : ""} · ${review.depth}${review.incremental ? " · new commits only" : ""}`,
-  ]
+    `**${counts}** · ${review.files - missing} file${review.files - missing === 1 ? "" : "s"} in ${seconds}s · ${review.agent}${review.model ? ` ${review.model}` : ""} · ${review.depth}${review.incremental ? " · new commits only" : ""}`,
+  )
+  if (notes.code) lines.push(`> [!NOTE]\n> ${notes.code}`)
+  if (missing > 0)
+    lines.push(
+      `<details><summary>${missing} file(s) not reviewed: their agent failed</summary>\n\n${review.unreviewed.map((p) => `- \`${p}\``).join("\n")}\n</details>`,
+    )
   if (skipped.length > 0)
     lines.push(
       `<details><summary>${skipped.length} file(s) not reviewed</summary>\n\n${skipped.map((s) => `- \`${s.path}\`: ${s.reason}`).join("\n")}\n</details>`,
@@ -229,6 +247,8 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
     const failures = results.flatMap((r) => (r._tag === "Failure" ? [r.failure.message] : []))
     const reviews = results.flatMap((r) => (r._tag === "Success" ? [r.success] : []))
+    // a failed chunk's files weren't looked at: the review is partial, and says which
+    const unreviewed = results.flatMap((r, i) => (r._tag === "Failure" ? (chunks[i] ?? []).map((f) => f.path) : []))
     if (reviews.length === 0) return yield* new Failed({ message: failures[0] ?? "the agent returned nothing" })
 
     const findings = triage(
@@ -250,6 +270,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
     const review = yield* save(id, {
       findings,
+      unreviewed,
       summary,
       durationMs: Date.now() - started,
       error:
@@ -258,14 +279,14 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       steps: [...steps],
     })
 
-    // a follow-up with nothing new stays quiet; a first review always says it looked
-    if (settings.postComments && !options.dryRun && (findings.length > 0 || !incremental)) {
+    // a follow-up with nothing new stays quiet; a first review always says it looked, and a partial one says so
+    if (settings.postComments && !options.dryRun && (findings.length > 0 || !incremental || unreviewed.length > 0)) {
       const agentInfo = { kind: settings.agent, model: settings.model, depth: settings.depth }
       yield* timed(
         "post",
         github.postReview(ref, {
           commitId: pr.head.sha,
-          body: reviewBody(review, skipped),
+          body: reviewBody(review, skipped, { failure: failures[0], code: codeProblem }),
           comments: findings.map((f) => ({ path: f.path, line: f.line, body: commentBody(f, agentInfo) })),
         }),
       )
@@ -275,9 +296,8 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
     return yield* save(id, { status: "done", durationMs: Date.now() - started, steps: [...steps] })
   })
 
-  const run = Effect.fn("Reviewer.run")(function* (ref: PrRef, options: StartOptions) {
-    const settings = { ...(yield* store.settings), ...options.overrides }
-    const created = yield* store.create({
+  const record = (ref: PrRef, options: StartOptions, settings: Settings) =>
+    store.create({
       repo: `${ref.owner}/${ref.repo}`,
       number: ref.number,
       title: "",
@@ -298,9 +318,14 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       durationMs: null,
       summary: "",
       findings: [],
+      unreviewed: [],
       steps: [],
       error: null,
     })
+
+  const run = Effect.fn("Reviewer.run")(function* (ref: PrRef, options: StartOptions) {
+    const settings = { ...(yield* store.settings), ...options.overrides }
+    const created = yield* record(ref, options, settings)
     yield* PubSub.publish(changes, created)
     const elapsed = () => Date.now() - created.startedAt
 
@@ -340,8 +365,29 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
   const cancel = (ref: PrRef) => FiberMap.remove(running, prKey(ref))
 
+  // too many reviews at once: this one is recorded as skipped (the dashboard and github's comment
+  // say why, and the boxes are there to try again) instead of waiting in a queue that only grows
+  const turnAway = Effect.fn("Reviewer.turnAway")(function* (ref: PrRef, options: StartOptions, queued: number) {
+    const settings = { ...(yield* store.settings), ...options.overrides }
+    const created = yield* record(ref, options, settings)
+    const review = yield* save(created.id, {
+      status: "skipped",
+      summary: `glance is busy (${queued} reviews running or waiting): try again in a few minutes`,
+      durationMs: 0,
+    })
+    yield* Effect.logWarning(`turned away ${prKey(ref)}: ${queued} reviews running or waiting (MAX_QUEUED_REVIEWS)`)
+    if (settings.postComments && !options.dryRun) yield* panel.show(ref, { kind: "finished", review })
+  })
+
   // the one it replaces is cancelled first (and its comment written), then this one starts
-  const start = (ref: PrRef, options: StartOptions) => cancel(ref).pipe(Effect.andThen(FiberMap.run(running, prKey(ref))(run(ref, options))), Effect.asVoid)
+  const start = (ref: PrRef, options: StartOptions) =>
+    Effect.gen(function* () {
+      const queued = yield* FiberMap.size(running)
+      // replacing a running review doesn't add to the queue
+      if (queued >= limits.maxQueued && !(yield* FiberMap.has(running, prKey(ref)))) return yield* turnAway(ref, options, queued)
+      yield* cancel(ref)
+      yield* FiberMap.run(running, prKey(ref))(run(ref, options))
+    })
 
   // reviews a stop or a crash cut short: a recent one starts again, once; older ones (or one that
   // was itself a restart, which may be what crashed) are marked failed, and their comment says so

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { agentEnv, childEnv } from "../src/agent.ts"
 import { chunk, commentable, parseDiff, render, restrictTo, select } from "../src/diff.ts"
 import { depthIn, type Finding, parsePrUrl } from "../src/domain.ts"
-import { anchor, triage } from "../src/reviewer.ts"
+import { anchor, reviewBody, triage } from "../src/reviewer.ts"
+import { review } from "./support.ts"
 
 const DIFF = `diff --git a/src/auth.ts b/src/auth.ts
 index 1111111..2222222 100644
@@ -123,4 +125,47 @@ test("reads a depth from labels and comments", () => {
   expect(depthIn("/glance")).toBeUndefined()
   expect(depthIn("high priority")).toBeUndefined()
   expect(depthIn("myglance:high")).toBeUndefined()
+})
+
+test("child processes get an allowlist of glance's environment: no secrets, no api keys", () => {
+  const glance = {
+    PATH: "/usr/bin",
+    HOME: "/home/bun",
+    LC_ALL: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy:3128",
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat",
+    CODEX_HOME: "/data/codex",
+    DATABASE_URL: "postgres://glance:secret@postgres/glance",
+    GITHUB_TOKEN: "ghp_secret",
+    GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----",
+    GITHUB_WEBHOOK_SECRET: "whsec",
+    GITHUB_CLIENT_SECRET: "oauth",
+    BETTER_AUTH_SECRET: "auth",
+    GLANCE_SSO_CLIENT_SECRET: "sso",
+    ANTHROPIC_API_KEY: "sk-ant-api",
+    OPENAI_API_KEY: "sk-openai",
+  }
+  expect(agentEnv(glance)).toEqual({
+    PATH: "/usr/bin",
+    HOME: "/home/bun",
+    LC_ALL: "C.UTF-8",
+    HTTPS_PROXY: "http://proxy:3128",
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat",
+    CODEX_HOME: "/data/codex",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    DISABLE_AUTOUPDATER: "1",
+    NO_COLOR: "1",
+  })
+  // git and tar don't even get the agents' logins
+  expect(Object.keys(childEnv({ GIT_TERMINAL_PROMPT: "0" }, glance)).sort()).toEqual(["GIT_TERMINAL_PROMPT", "HOME", "HTTPS_PROXY", "LC_ALL", "PATH"])
+})
+
+test("the review on github says when part of the pull request wasn't reviewed", () => {
+  const whole = reviewBody({ ...review(), id: 1, files: 3 }, [])
+  const part = reviewBody({ ...review(), id: 1, files: 3, unreviewed: ["src/a.ts", "src/b.ts"] }, [], { failure: "claude timed out after 600s" })
+  expect(whole).toContain("**No issues found**")
+  expect(whole).not.toContain("Partial")
+  expect(part).toContain("Partial review: 2 of 3 files couldn't be reviewed** (claude timed out after 600s)")
+  expect(part).toContain("No issues found in the files reviewed")
+  expect(part).toContain("`src/b.ts`")
 })
