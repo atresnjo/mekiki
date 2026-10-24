@@ -3,13 +3,14 @@
 import { PgliteClient } from "@effect/sql-pglite"
 import * as PgliteDrizzle from "drizzle-orm/effect-pglite"
 import { migrate } from "drizzle-orm/effect-pglite/migrator"
-import { ConfigProvider, Effect, Layer, PubSub, Stream } from "effect"
+import { ConfigProvider, Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Agent } from "../src/agent.ts"
+import { Auth } from "../src/auth.ts"
 import { Checkout } from "../src/checkout.ts"
 import { AppConfig } from "../src/config.ts"
 import { Database } from "../src/database.ts"
 import { GitHubError, type PrRef, type Review } from "../src/domain.ts"
-import { GitHub } from "../src/github.ts"
+import { GitHub, type Permission } from "../src/github.ts"
 import { Health } from "../src/health.ts"
 import { Panel } from "../src/panel.ts"
 import { Reviewer, type StartOptions } from "../src/reviewer.ts"
@@ -43,6 +44,7 @@ export const review = (overrides: Partial<Review> = {}): Omit<Review, "id"> => (
   durationMs: 1000,
   summary: "",
   findings: [],
+  unreviewed: [],
   steps: [],
   error: null,
   ...overrides,
@@ -85,6 +87,26 @@ export const fakeAgent = Layer.succeed(
   }),
 )
 
+/** signing in, faked: a request carrying `cookie: signed-in` is alice, any other is nobody. off: everyone is the local user */
+export const fakeAuth = (enabled: boolean) =>
+  Layer.succeed(
+    Auth.Service,
+    Auth.Service.of({
+      enabled,
+      methods: { github: enabled, sso: null },
+      handler: () => Effect.succeed(new Response(null, { status: 404 })),
+      user: (headers) =>
+        Effect.succeed(
+          !enabled
+            ? Option.some(Auth.LOCAL)
+            : headers.get("cookie") === "signed-in"
+              ? Option.some({ id: "u1", name: "Alice", email: "alice@acme.com", image: null })
+              : Option.none(),
+        ),
+      instance: null,
+    }),
+  )
+
 export const fakeHealth = Layer.succeed(
   Health.Service,
   Health.Service.of({
@@ -93,7 +115,8 @@ export const fakeHealth = Layer.succeed(
   }),
 )
 
-export const fakeGitHub = (acknowledged: Array<number>) =>
+/** github, faked: `permissions` is who has what on every repository (everyone else: none) */
+export const fakeGitHub = (acknowledged: Array<number>, permissions: Record<string, Permission> = {}) =>
   Layer.succeed(
     GitHub.Service,
     GitHub.Service.of({
@@ -106,6 +129,7 @@ export const fakeGitHub = (acknowledged: Array<number>) =>
       createComment: () => Effect.succeed(1),
       updateComment: () => Effect.void,
       acknowledge: (_, id) => Effect.sync(() => void acknowledged.push(id)),
+      permission: (_, login) => Effect.succeed(permissions[login] ?? "none"),
     }),
   )
 

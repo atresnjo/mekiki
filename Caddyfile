@@ -7,12 +7,12 @@
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy no-referrer
-		# scripts and data from this origin only; kumo and echarts set inline styles
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		# scripts and data from this origin only; kumo and echarts set inline styles; avatars come from github or the sso
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		-Server
 	}
 
-	# the rpc api, sign-in, health and the github webhook. the review stream is one long
+	# the rpc api, signing in (/api/auth), health and the github webhook. the review stream is one long
 	# response: passed on as it's written, not buffered
 	handle /api/* {
 		reverse_proxy glance:7420 {

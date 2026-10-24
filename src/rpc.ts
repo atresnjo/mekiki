@@ -3,7 +3,7 @@
 // atom-backed client (web/src/lib/glance.ts). transport: http + ndjson at RPC_PATH.
 //
 // not in here, on purpose: the github webhook (plain http, guarded by its signature)
-import { Duration, Schema } from "effect"
+import { Context, Duration, Schema } from "effect"
 import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
 import { Depth, Review, Settings } from "./domain.ts"
 
@@ -33,9 +33,15 @@ export type ApiError = typeof ApiError.Type
 
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", { message: Schema.String }) {}
 
-// ---------- auth: with a token set, every call carries the session cookie POST /api/session gave ----------
+// ---------- auth: with signing in on, every call carries better auth's session cookie (/api/auth) ----------
 
-export class Authenticated extends RpcMiddleware.Service<Authenticated>()("@glance/api/Authenticated", {
+/** who's calling: someone signed in, or the local user of a glance without sign-in */
+export const User = Schema.Struct({ id: Schema.String, name: Schema.String, email: Schema.String, image: Schema.NullOr(Schema.String) })
+export interface User extends Schema.Schema.Type<typeof User> {}
+
+export class CurrentUser extends Context.Service<CurrentUser, User>()("@glance/api/CurrentUser") {}
+
+export class Authenticated extends RpcMiddleware.Service<Authenticated, { provides: CurrentUser }>()("@glance/api/Authenticated", {
   error: Unauthorized,
 }) {}
 
@@ -53,6 +59,7 @@ export const Status = Schema.Struct({
   webhook: Schema.Boolean,
   /** signing in is on: the dashboard offers to sign out */
   auth: Schema.Boolean,
+  user: User,
 })
 export interface Status extends Schema.Schema.Type<typeof Status> {}
 

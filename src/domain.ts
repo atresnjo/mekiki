@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 export const AgentKind = Schema.Literals(["claude", "codex"])
 export type AgentKind = typeof AgentKind.Type
@@ -13,7 +13,7 @@ export const EFFORT: Record<Depth, "low" | "medium" | "high"> = { light: "low", 
 /** a depth named in a label or comment: `glance:high`, `glance-light`, `/glance medium` */
 export const depthIn = (text: string): Depth | undefined => {
   const m = text.match(/(?:^|[\s/@])glance(?:[:/ -]|\s+)(light|medium|high)\b/i)
-  return m?.[1] ? (m[1].toLowerCase() as Depth) : undefined
+  return m?.[1] ? Option.getOrUndefined(Schema.decodeUnknownOption(Depth)(m[1].toLowerCase())) : undefined
 }
 
 export const Severity = Schema.Literals(["critical", "high", "medium", "low"])
@@ -85,6 +85,11 @@ export const Review = Schema.Struct({
   durationMs: Schema.NullOr(Schema.Finite),
   summary: Schema.String,
   findings: Schema.Array(Finding),
+  /**
+   * the files of the chunks whose agent failed: a review with any is partial. it says so on github,
+   * and the next one doesn't start from it. reviews saved before this was kept have none
+   */
+  unreviewed: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   steps: Schema.Array(Step),
   error: Schema.NullOr(Schema.String),
 })
@@ -114,3 +119,6 @@ export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError"
   status: Schema.optional(Schema.Finite),
   message: Schema.String,
 }) {}
+
+/** finished, but some of it couldn't be reviewed */
+export const partial = (review: Pick<Review, "status" | "unreviewed">) => review.status === "done" && review.unreviewed.length > 0

@@ -2,7 +2,7 @@ import { useAtomSet } from "@effect/atom-react"
 import { Banner } from "@cloudflare/kumo/components/banner"
 import { Loader } from "@cloudflare/kumo/components/loader"
 import { createRootRoute, Outlet } from "@tanstack/react-router"
-import { Header, StartForm, TokenForm } from "../components/shell.tsx"
+import { Header, SignIn, StartForm } from "../components/shell.tsx"
 import { report } from "../components/ui.tsx"
 import { type Depth, feedAtom, saveSettings, settingsAtom, statusAtom, useValue } from "../lib/glance.ts"
 
@@ -24,7 +24,7 @@ function Root() {
     <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-8">
       <Header status={status} live={feed?._tag === "Live"} />
       {feed?._tag === "Locked" ? (
-        <TokenForm />
+        <SignIn />
       ) : (
         <>
           <StartForm reviews={feed?.reviews ?? []} depth={settings?.depth} onDepth={changeDepth} />

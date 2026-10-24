@@ -1,38 +1,40 @@
 // the rpc api (rpc.ts) on top of glance's services, served at RPC_PATH (http + ndjson).
-// with a token set, every call is checked by the Authenticated middleware: the session cookie
+// every call is checked by the Authenticated middleware: better auth's session, and whether they're still allowed in
 import { Duration, Effect, Layer, Option, Stream } from "effect"
-import { Cookies } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { Agent } from "./agent.ts"
+import { Auth } from "./auth.ts"
 import type { AppConfig } from "./config.ts"
 import { type Depth, parsePrUrl, type Review } from "./domain.ts"
 import { Health } from "./health.ts"
 import { Reviewer } from "./reviewer.ts"
-import { Authenticated, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
-import { Session } from "./session.ts"
+import { Authenticated, CurrentUser, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
 import { Store } from "./store.ts"
 
 const depthOverride = (depth: Depth | undefined) => (depth ? { depth } : {})
+
+/** what started a review, and who: "manual by alice@acme.com" */
+const by = (trigger: string) => Effect.map(CurrentUser, (user) => (user.email ? `${trigger} by ${user.email}` : trigger))
 
 const prOf = (review: Review) => {
   const [owner = "", repo = ""] = review.repo.split("/")
   return { owner, repo, number: review.number }
 }
 
-/** refusals (not found, invalid) go out as they are; a defect is glance's bug: logged, and sent as Failed without its details */
+/** Expected refusals stay typed; infrastructure failures and defects are logged and sanitized. */
 const failed = (defect: unknown) =>
   Effect.logError("rpc failed", defect).pipe(Effect.andThen(Effect.fail(new Failed({ message: "glance failed: the details are in its log" }))))
-const api = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.catchDefect(effect, failed)
+const api = <A, E, R>(effect: Effect.Effect<A, E | Store.StoreError, R>) => effect.pipe(Effect.catchTag("StoreError", failed), Effect.catchDefect(failed))
 
 export const AuthenticatedLive = Layer.effect(
   Authenticated,
   Effect.gen(function* () {
-    const sessions = yield* Session.Service
+    const auth = yield* Auth.Service
     return Authenticated.of(
       Effect.fn("Rpc.authenticate")(function* (effect, { headers }) {
-        const cookie = Cookies.parseHeader(headers.cookie ?? "")[Session.COOKIE]
-        if (!(yield* sessions.verify(cookie))) return yield* new Unauthorized({ message: "sign in with the access token" })
-        return yield* effect
+        const user = yield* auth.user(Auth.webHeaders(headers))
+        if (Option.isNone(user)) return yield* new Unauthorized({ message: "sign in to use glance" })
+        return yield* Effect.provideService(effect, CurrentUser, user.value)
       }),
     )
   }),
@@ -45,7 +47,7 @@ export const HandlersLive = (config: AppConfig) =>
       const store = yield* Store.Service
       const agent = yield* Agent.Service
       const health = yield* Health.Service
-      const sessions = yield* Session.Service
+      const auth = yield* Auth.Service
 
       const reviewById = Effect.fn("Rpc.reviewById")(function* (id: number) {
         const review = yield* store.get(id)
@@ -78,30 +80,34 @@ export const HandlersLive = (config: AppConfig) =>
                 Stream.merge(heartbeats),
               )
             }),
-          ).pipe(Stream.catchDefect((defect) => Stream.fromEffect(failed(defect)))),
+          ).pipe(
+            Stream.catchTag("StoreError", (error) => Stream.fromEffect(failed(error))),
+            Stream.catchDefect((defect) => Stream.fromEffect(failed(defect))),
+          ),
 
         ListReviews: ({ before }) => store.listBefore(before, PAGE).pipe(api),
 
         StartReview: Effect.fn("Rpc.StartReview")(function* ({ url, dryRun, depth }) {
           const ref = parsePrUrl(url)
           if (!ref) return yield* new Invalid({ message: "expected a pull request url like https://github.com/owner/repo/pull/123" })
-          yield* reviewer.start(ref, { trigger: "manual", dryRun, overrides: depthOverride(depth) })
+          yield* reviewer.start(ref, { trigger: yield* by("manual"), dryRun, overrides: depthOverride(depth) })
         }, api),
 
         RetryReview: Effect.fn("Rpc.RetryReview")(function* ({ id, depth }) {
           const review = yield* reviewById(id)
-          yield* reviewer.start(prOf(review), { trigger: depth ? `retry ${depth}` : "retry", overrides: depthOverride(depth) })
+          yield* reviewer.start(prOf(review), { trigger: yield* by(depth ? `retry ${depth}` : "retry"), overrides: depthOverride(depth) })
         }, api),
 
         CancelReview: Effect.fn("Rpc.CancelReview")(function* ({ id }) {
-          yield* reviewer.cancel(prOf(yield* reviewById(id)))
+          const review = yield* reviewById(id)
+          yield* Effect.logInfo(`${yield* by("cancelled")} ${review.repo}#${review.number}`)
+          yield* reviewer.cancel(prOf(review))
         }, api),
 
-        GetStatus: () =>
-          health.agents.pipe(
-            Effect.map((agents) => ({ agents, webhook: Option.isSome(config.github.webhookSecret), auth: sessions.enabled })),
-            api,
-          ),
+        GetStatus: Effect.fn("Rpc.GetStatus")(function* () {
+          const agents = yield* health.agents
+          return { agents, webhook: Option.isSome(config.github.webhookSecret), auth: auth.enabled, user: yield* CurrentUser }
+        }, api),
 
         GetSettings: () => store.settings.pipe(api),
 

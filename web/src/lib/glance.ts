@@ -7,21 +7,11 @@ import { FetchHttpClient } from "effect/http"
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 
-export type { Depth, Finding, Models, Review, Settings, Severity, Status } from "@glance/api"
+export type { Depth, Finding, Models, Review, Settings, Severity, Status, User } from "@glance/api"
 
 // the api lives on this origin: vite forwards /api/ to it in dev, a reverse proxy does in production
 
-// ---------- signing in: when the server has a token set, it's exchanged for a session cookie (plain http, like the webhook) ----------
-
-/** null when signed in, else why not */
-export const signIn = async (token: string): Promise<string | null> => {
-  const response = await fetch("/api/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) })
-  if (response.ok) return null
-  const body = (await response.json().catch(() => ({}))) as { error?: string }
-  return body.error ?? `sign-in failed (${response.status})`
-}
-
-export const signOut = () => fetch("/api/session", { method: "DELETE" }).then(() => window.location.reload())
+// signing in is better auth's, over plain http (lib/auth.ts): its session cookie goes along with every call
 
 // ---------- client ----------
 
@@ -65,7 +55,7 @@ export const useValue = <A, E>(atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>) =
 
 export type Feed =
   | { readonly _tag: "Live" | "Reconnecting"; readonly reviews: ReadonlyArray<Review> }
-  /** the server wants a token and ours is missing or wrong */
+  /** the server wants someone signed in, and nobody is (or they're no longer allowed in) */
   | { readonly _tag: "Locked" }
 
 type FeedStep = Exclude<ReviewsEvent, { readonly _tag: "Heartbeat" }> | { readonly _tag: "Dropped" } | { readonly _tag: "Unauthorized" }
@@ -122,7 +112,7 @@ export const olderAtom = Atom.make<Older>({ reviews: [], done: false }).pipe(Ato
 
 /** the next page, before the oldest review loaded so far */
 export const loadOlder = Glance.runtime.fn(
-  Effect.fnUntraced(function* (before: number, get: Atom.FnContext) {
+  Effect.fn("Glance.loadOlder")(function* (before: number, get: Atom.FnContext) {
     const client = yield* Glance
     const page = yield* client("ListReviews", { before })
     const older = get(olderAtom)

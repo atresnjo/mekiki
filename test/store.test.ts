@@ -3,7 +3,7 @@ import { createVerify, generateKeyPairSync } from "node:crypto"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Option, Schedule } from "effect"
 import type { PrRef } from "../src/domain.ts"
-import { appJwt } from "../src/github.ts"
+import { appJwt, GitHub } from "../src/github.ts"
 import { Reviewer } from "../src/reviewer.ts"
 import { Store } from "../src/store.ts"
 import { configFrom, fakeAgent, fakeCheckout, fakeGitHub, fakePanel, memoryStore, review } from "./support.ts"
@@ -95,4 +95,52 @@ test("after a restart, a review cut short is started again once; an old one or a
   ])
   // the old review's comment on github says it failed, not "reviewing…"
   expect(shown).toEqual([{ pr: { owner: "o", repo: "r", number: 2 }, kind: "finished" }])
+})
+
+test("a partial review isn't where the next one starts from; one saved before partial reviews existed still reads", async () => {
+  const [last, old] = await withStore((store) =>
+    Effect.gen(function* () {
+      const whole = yield* store.create(review({ headSha: "a1" }))
+      yield* store.create(review({ headSha: "b2", unreviewed: ["src/a.ts"] }))
+      // written by an older glance: no unreviewed key at all
+      const { unreviewed: _, ...before } = review({ headSha: "c3", repo: "o/old" })
+      const legacy = yield* store.create(before as never)
+      return [Option.map(yield* store.lastDone("o/r", 1), (r) => r.id === whole.id), yield* store.get(legacy.id)]
+    }),
+  )
+  expect(last).toEqual(Option.some(true))
+  expect(Option.map(old, (r) => r.unreviewed)).toEqual(Option.some([]))
+})
+
+test("past MAX_QUEUED_REVIEWS a review is turned away, and says so; replacing a running one is fine", async () => {
+  const busy = configFrom({ MAX_QUEUED_REVIEWS: "1" })
+  const shown: Array<{ readonly pr: PrRef; readonly kind: string }> = []
+  // github never answers: the first review stays running
+  const stuck = Layer.effect(
+    GitHub.Service,
+    Effect.map(GitHub.Service, (fake) => GitHub.Service.of({ ...fake, pullRequest: () => Effect.never })),
+  ).pipe(Layer.provide(fakeGitHub([])))
+  const rows = await Effect.runPromise(
+    Effect.gen(function* () {
+      const reviewer = yield* Reviewer.Service
+      const store = yield* Store.Service
+      const pr = (number: number) => ({ owner: "o", repo: "r", number })
+      yield* reviewer.start(pr(1), { trigger: "manual" })
+      yield* reviewer.start(pr(2), { trigger: "manual" })
+      yield* reviewer.start(pr(1), { trigger: "manual again" })
+      return (yield* store.list(10)).map((r) => ({ number: r.number, status: r.status, summary: r.summary }))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Reviewer.layer(busy.limits)),
+      Effect.provide(Layer.mergeAll(stuck, fakeAgent, fakePanel(shown), fakeCheckout).pipe(Layer.provideMerge(memoryStore(busy)))),
+      Effect.provide(BunServices.layer),
+    ),
+  )
+  expect(rows.map((r) => [r.number, r.status])).toEqual([
+    [1, "running"],
+    [2, "skipped"],
+    [1, "cancelled"],
+  ])
+  expect(rows[1]?.summary).toContain("glance is busy")
+  expect(shown.some((s) => s.pr.number === 2 && s.kind === "finished")).toBe(true)
 })

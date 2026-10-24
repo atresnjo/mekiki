@@ -24,9 +24,10 @@ A pull request is input from whoever wrote it, so the agent can read the checkou
 
 - **Claude Code** runs with `--restricted` and only `Read`, `Grep` and `Glob`: no shell, no network tools, file reads confined to the checkout (symlinks included), and the repository's own settings, hooks and `CLAUDE.md` ignored (`--safe-mode`).
 - **Codex** runs with a permission profile that may read only the checkout plus the system files a shell needs, not your home directory (so not `~/.codex/auth.json` or `~/.ssh`), and writes nothing. The repository's `AGENTS.md` is ignored.
-- Checkouts contain no symlinks (git writes them as plain files; the tarball fallback deletes them), no repository hooks ever run, the GitHub token reaches git only through its environment (never its arguments), and API keys are stripped from the agents' environment.
+- Checkouts contain no symlinks (git writes them as plain files; the tarball fallback deletes them), no repository hooks ever run, and the GitHub token reaches git only through its environment (never its arguments).
+- The agents get an allowlist of glance's environment (the system basics, proxy and CA settings, and their own login), so the database URL, GitHub's credentials and the sign-in secrets never reach them; git and tar get less still. `bun scripts/isolation-check.ts` runs both CLIs on a pull request written to talk them into leaking those (and files beside the checkout) and fails if anything comes back.
 
-If the code can't be fetched at all (git and the tarball both fail, or the tarball is over `MAX_REPO_MB`), the review runs on the diff alone and says so.
+If the code can't be fetched at all (git and the tarball both fail, the repository is over `MAX_REPO_MB`, or the download takes longer than `CHECKOUT_TIMEOUT_SECONDS`), the review runs on the diff alone and says so.
 
 ## Run
 
@@ -39,7 +40,11 @@ docker run -d --name glance-postgres -e POSTGRES_USER=glance -e POSTGRES_PASSWOR
 bun dev         # api on http://127.0.0.1:7420, dashboard on http://localhost:7421
 ```
 
+On your own machine nobody needs to sign in. To try signing in, set `BETTER_AUTH_SECRET`, an allow rule (`GLANCE_ALLOWED_EMAILS=you@example.com`) and a GitHub OAuth app whose callback is `http://localhost:7421/api/auth/callback/github` (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`).
+
 The server brings the database up to date when it starts: the migrations in `drizzle/` it hasn't applied yet run first. After changing `src/schema.ts`, `bun db:generate` writes the next one. The tests run on an in-process Postgres (PGlite) and need no database.
+
+`bun run test:e2e` rehearses the review pipeline using a local HTTP fixture and real agent subprocesses; `bun run test:e2e:postgres` also verifies the production database and sign-in adapters in a temporary Docker container. They write repeatable reports under `.data/`. [Effect conventions and verification](docs/effect.md) describes service boundaries, typed failures, and resource ownership.
 
 The server is the api only (Effect RPC at `/api/rpc`, http + ndjson, and the webhook); it doesn't serve the dashboard. `web/` is a plain Vite + TanStack Router app: `bun dev:web` runs it alone, `bun run build` writes `web/dist` for any static host. The dashboard calls the api on its own origin: Vite forwards `/api/` to it (`GLANCE_API_URL`, default `http://127.0.0.1:7420`); in production a reverse proxy does the same.
 
@@ -49,7 +54,7 @@ Docker Compose runs three containers: `glance` (the api, git, and the `claude` a
 
 ```bash
 git clone <this repo> glance && cd glance
-cp .env.example .env    # set GLANCE_DOMAIN, POSTGRES_PASSWORD, GLANCE_TOKEN, GITHUB_WEBHOOK_SECRET, and a GitHub app or token
+cp .env.example .env    # GLANCE_DOMAIN, POSTGRES_PASSWORD, BETTER_AUTH_SECRET, sign-in (github and/or sso, who's allowed), GITHUB_WEBHOOK_SECRET, a github app
 docker compose up -d --build
 docker compose logs -f glance
 ```
@@ -62,11 +67,11 @@ docker compose logs -f glance
    `https://<domain>/api/health` answers 200 once the database works and at least one agent is logged in, and 503 otherwise. Docker's healthcheck reads it, and glance logs an error when an agent stops working (an expired login, say). Point an uptime monitor at it.
 
 3. **GitHub:** a GitHub App is best: its own rate limits, comments under its name, and access only to the repositories it's installed on. Give it read access to contents and write access to pull requests and issues, subscribe it to **Pull requests** and **Issue comments**, and set its webhook to `https://<domain>/api/webhooks/github` with `GITHUB_WEBHOOK_SECRET`. Set `GITHUB_APP_ID` and either `GITHUB_APP_PRIVATE_KEY` (newlines as `\n`) or `GITHUB_APP_PRIVATE_KEY_FILE` (mount the `.pem` into the container). A personal token (`GITHUB_TOKEN`) works too, with a repository or organization webhook.
-4. **Sign in:** open `https://<domain>` and enter `GLANCE_TOKEN`.
+4. **Sign in:** with GitHub (an OAuth app, or the GitHub App's client id and secret, called back at `https://<domain>/api/auth/callback/github`) and/or the company's SSO, OIDC or SAML. Say who's allowed in with `GLANCE_ALLOWED_EMAILS`, `GLANCE_ALLOWED_GITHUB_ORGS` or `GLANCE_SSO_DOMAIN`. In production glance won't start until this is set up, and tells you what's missing. [docs/operations.md](docs/operations.md) has each provider's setup.
 
-The database is in the `postgres-data` volume; the checkouts and Codex's login are in `glance-data`. glance takes no backups of its own: dump the database off the machine on a schedule (`docker compose exec -T postgres pg_dump -U glance -Fc glance > glance.dump`, then restic, rclone, or a provider snapshot). To update, `git pull && docker compose up -d --build`. A stop or restart leaves running reviews to the next start, which reviews them again if they're less than an hour old.
+The database is in the `postgres-data` volume; the checkouts and Codex's login are in `glance-data`. `scripts/backup.sh` dumps the database and sends it off the machine (rclone or restic), and `scripts/restore-check.sh` proves a dump restores; run them on a schedule. A stop or restart leaves running reviews to the next start, which reviews them again if they're less than an hour old. Run one glance per database: a second refuses to start.
 
-Pin the CLIs with `--build-arg CLAUDE_CODE_VERSION=… --build-arg CODEX_VERSION=…` (in `docker-compose.yml` under `build.args`); by default each build takes the latest.
+The CLIs are pinned to the versions the release was tested with (`CLAUDE_CODE_VERSION`, `CODEX_VERSION` in `.env` override them). [docs/operations.md](docs/operations.md) covers the release rehearsal on staging, backups and restoring, alerts, upgrading and rolling back.
 
 Review from the terminal (dry run unless `--post`):
 
@@ -100,6 +105,10 @@ What happens when a pull request opens is the **mode** (dashboard settings or `G
 
 Drafts are skipped until they're ready for review. A new review of a pull request cancels the one still running.
 
+**Who may start one:** someone with at least `write` permission on the repository (`GLANCE_TRIGGER_PERMISSION`), for comments, ticked boxes and labels; a box counts only in glance's own comment, and bots never start reviews. Each person gets `GLANCE_REVIEWS_PER_USER_HOUR` (30) an hour and each pull request `GLANCE_REVIEWS_PER_PR_HOUR` (10). In auto mode a pull request whose author doesn't have the permission (a fork's, say) gets the checkboxes, for a maintainer to tick.
+
+**When part of a review fails** (an agent times out on one chunk, say), the review says so: "Partial review: 2 of 9 files couldn't be reviewed", the files listed, the panel reads "Partly reviewed", and the next review starts from before it, so those files get looked at.
+
 Other ways to pick a depth: comment `/glance high` (glance reacts 👀), or label the pull request `glance:high` (`glance:light`, `glance:medium`) to pin it; adding the label starts a review too. The Light / Medium / High switch in the dashboard sets the default.
 
 ## Subscription auth
@@ -113,7 +122,9 @@ glance always strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and friends from the 
 
 Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in Postgres (`DATABASE_URL`).
 
-Set `GLANCE_TOKEN` before exposing glance. The dashboard asks for it once per browser and exchanges it at `POST /api/session` for an HTTP-only session cookie (30 days, `GLANCE_SESSION_DAYS`), which every rpc call then carries. The cookie is an expiry signed with the token, so changing the token signs everyone out. With `GLANCE_TOKEN_FILE` instead, the file is read again every 30 seconds, so the token rotates without a restart. Sign-in attempts are limited to 10 per 15 minutes per client. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
+Signing in is [Better Auth](https://better-auth.com) at `/api/auth`: GitHub and/or SSO (OIDC or SAML through `@better-auth/sso`, one provider, configured from the environment), sessions in postgres (7 days, `GLANCE_SESSION_DAYS`), HTTP-only cookies, origin checks and rate limits on its routes. Whether someone's allowed in is checked when the session starts and again on every rpc call. Production (`GLANCE_ENV=production`, which the image sets, or any `HOST` beyond loopback) doesn't start without a working sign-in. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
+
+What a review may use is bounded: `AGENT_TIMEOUT_SECONDS` per agent, `CHECKOUT_TIMEOUT_SECONDS` per download, `MAX_REPO_MB` for git's download as much as the tarball, `GLANCE_DISK_BUDGET_MB` for all the checkouts together (least recently used go first), `MAX_QUEUED_REVIEWS` running or waiting at once (another is turned away and says so), and the containers' CPU and memory (`GLANCE_CPUS`, `GLANCE_MEMORY`).
 
 Logs are JSON lines in the Docker image (`GLANCE_LOG_FORMAT`), and `GLANCE_OTLP_URL` sends traces and logs to an OpenTelemetry collector.
 
@@ -121,7 +132,7 @@ Logs are JSON lines in the Docker image (`GLANCE_LOG_FORMAT`), and `GLANCE_OTLP_
 
 ```
 src/
-  main.ts       server: Effect HTTP router on Bun.serve: the rpc, sign-in, health and the webhook
+  main.ts       server: Effect HTTP router on Bun.serve: the rpc, signing in, health and the webhook
   cli.ts        bun review <url>
   reviewer.ts   the pipeline: fetch → select → chunk → agents in parallel → triage → post
   panel.ts      glance's comment on a pull request, and its depth checkboxes
@@ -134,11 +145,15 @@ src/
   database.ts   postgres (drizzle on @effect/sql-pg), migrated at startup
   schema.ts     the tables; drizzle/ holds their migrations
   rpc.ts        the dashboard's api: one Effect RPC group, shared with web/ (as @glance/api)
-  rpc-server.ts its handlers, and the session middleware
-  session.ts    sign-in: the access token for a signed session cookie, attempts limited
+  rpc-server.ts its handlers, and the middleware that checks who's calling
+  auth.ts       signing in: better auth (github, sso), and who's allowed in
+  triggers.ts   who may start a review from github, and how often
+  instance.ts   one glance per database: an advisory lock
   health.ts     /api/health, and the monitor that logs when an agent stops working
   observability.ts  json logs, otlp
   http.ts       webhook
+scripts/        isolation-check.ts (a hostile pull request leaks nothing), backup.sh, restore-check.sh
+docs/           operations.md: signing in, the github app, the release rehearsal, backups, alerts, rollback
 web/            the dashboard: Vite, TanStack Router (file routes in src/routes), Kumo
   src/lib/glance.ts  the rpc client (AtomRpc, http + ndjson) and the live review feed
 ```

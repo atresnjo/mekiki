@@ -1,7 +1,7 @@
 // the review pipeline. everything that can overlap does: the pull request, its diff and the last
 // review are fetched together, every chunk goes to its own agent process at once, and filtering is
 // plain code. a review is: ~3 github calls, one agent call per chunk, one github call to post
-import { Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSub, Schema, type Scope, Semaphore } from "effect"
+import { Clock, Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSub, Ref, Result, Schema, type Scope, Semaphore } from "effect"
 import { Agent } from "./agent.ts"
 import { Checkout } from "./checkout.ts"
 import * as Diff from "./diff.ts"
@@ -20,6 +20,8 @@ export interface Limits {
   readonly chunkChars: number
   /** agent processes running at once, across all reviews */
   readonly concurrency: number
+  /** reviews running or waiting at once: another is turned away, and says so */
+  readonly maxQueued: number
 }
 
 export interface StartOptions {
@@ -34,9 +36,9 @@ export interface StartOptions {
 
 export interface Interface {
   /** review in the background; a newer review of the same pull request replaces a running one */
-  readonly start: (pr: PrRef, options: StartOptions) => Effect.Effect<void>
+  readonly start: (pr: PrRef, options: StartOptions) => Effect.Effect<void, Store.StoreError>
   /** review and wait for the result */
-  readonly run: (pr: PrRef, options: StartOptions) => Effect.Effect<Review>
+  readonly run: (pr: PrRef, options: StartOptions) => Effect.Effect<Review, Store.StoreError>
   readonly cancel: (pr: PrRef) => Effect.Effect<void>
   /** every review, each time it changes, from the moment of subscribing until the scope closes */
   readonly subscribe: Effect.Effect<PubSub.Subscription<Review>, never, Scope.Scope>
@@ -106,14 +108,30 @@ export const commentBody = (f: Finding, agent: { readonly kind: AgentKind; reado
     .filter(Boolean)
     .join("\n\n")
 
-const reviewBody = (review: Review, skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>) => {
+export const reviewBody = (
+  review: Review,
+  skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>,
+  notes: { readonly failure?: string | undefined; readonly code?: string | undefined } = {},
+) => {
   const seconds = ((review.durationMs ?? 0) / 1000).toFixed(1)
-  const counts = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
-  const lines = [
-    `### glance`,
+  const missing = review.unreviewed.length
+  const found = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
+  // partial: "no issues" would claim more than was looked at
+  const counts = missing > 0 ? `${found} in the files reviewed` : found
+  const lines = [`### glance`]
+  if (missing > 0)
+    lines.push(
+      `> [!WARNING]\n> **Partial review: ${missing} of ${review.files} file${review.files === 1 ? "" : "s"} couldn't be reviewed**${notes.failure ? ` (${notes.failure.slice(0, 200)})` : ""}. Tick a depth in glance's comment to try again.`,
+    )
+  lines.push(
     review.summary,
-    `**${counts}** · ${review.files} file${review.files === 1 ? "" : "s"} in ${seconds}s · ${review.agent}${review.model ? ` ${review.model}` : ""} · ${review.depth}${review.incremental ? " · new commits only" : ""}`,
-  ]
+    `**${counts}** · ${review.files - missing} file${review.files - missing === 1 ? "" : "s"} in ${seconds}s · ${review.agent}${review.model ? ` ${review.model}` : ""} · ${review.depth}${review.incremental ? " · new commits only" : ""}`,
+  )
+  if (notes.code) lines.push(`> [!NOTE]\n> ${notes.code}`)
+  if (missing > 0)
+    lines.push(
+      `<details><summary>${missing} file(s) not reviewed: their agent failed</summary>\n\n${review.unreviewed.map((p) => `- \`${p}\``).join("\n")}\n</details>`,
+    )
   if (skipped.length > 0)
     lines.push(
       `<details><summary>${skipped.length} file(s) not reviewed</summary>\n\n${skipped.map((s) => `- \`${s.path}\`: ${s.reason}`).join("\n")}\n</details>`,
@@ -127,14 +145,16 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
   const store = yield* Store.Service
   const panel = yield* Panel.Service
   const checkout = yield* Checkout.Service
-  const running = yield* FiberMap.make<string>()
   const changes = yield* PubSub.sliding<Review>(256)
+  yield* Effect.addFinalizer(() => PubSub.shutdown(changes))
+  const running = yield* FiberMap.make<string, Review | void, never>()
+  const admissions = yield* Semaphore.make(1)
   const permits = yield* Semaphore.make(limits.concurrency)
 
   // stopping: the reviews about to be interrupted stay "running", and the next start takes them up.
   // added after the fiber map, so it runs before the map interrupts them
-  let stopping = false
-  yield* Effect.addFinalizer(() => Effect.sync(() => (stopping = true)))
+  const stopping = yield* Ref.make(false)
+  yield* Effect.addFinalizer(() => Ref.set(stopping, true))
 
   const save = (id: number, patch: Partial<Omit<Review, "id">>) => store.update(id, patch).pipe(Effect.tap((r) => PubSub.publish(changes, r)))
 
@@ -146,12 +166,19 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
     options: StartOptions,
     reviewing: Effect.Effect<void>,
   ) {
-    const started = Date.now()
+    const started = yield* Clock.currentTimeMillis
     const steps: Array<Step> = []
     const timed = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.suspend(() => {
-        const t = Date.now()
-        return effect.pipe(Effect.ensuring(Effect.sync(() => steps.push({ name, ms: Date.now() - t }))))
+      Effect.gen(function* () {
+        const started = yield* Clock.currentTimeMillis
+        return yield* effect.pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const finished = yield* Clock.currentTimeMillis
+              steps.push({ name, ms: finished - started })
+            }),
+          ),
+        )
       })
     const repo = `${ref.owner}/${ref.repo}`
 
@@ -204,9 +231,9 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
     // what's left of the download once the diff is ready: usually nothing
     const checkedOut = yield* timed("code", Fiber.join(code))
-    const dir = checkedOut._tag === "Success" ? checkedOut.success : undefined
+    const dir = Result.isSuccess(checkedOut) ? checkedOut.success : undefined
     // without the code the review still runs, on the diff alone, and says so
-    const codeProblem = checkedOut._tag === "Failure" ? `reviewed the diff only: ${checkedOut.failure.message}` : undefined
+    const codeProblem = Result.isFailure(checkedOut) ? `reviewed the diff only: ${checkedOut.failure.message}` : undefined
 
     const results = yield* Effect.forEach(
       chunks,
@@ -227,8 +254,10 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       { concurrency: "unbounded" },
     )
 
-    const failures = results.flatMap((r) => (r._tag === "Failure" ? [r.failure.message] : []))
-    const reviews = results.flatMap((r) => (r._tag === "Success" ? [r.success] : []))
+    const failures = results.flatMap((r) => (Result.isFailure(r) ? [r.failure.message] : []))
+    const reviews = results.flatMap((r) => (Result.isSuccess(r) ? [r.success] : []))
+    // a failed chunk's files weren't looked at: the review is partial, and says which
+    const unreviewed = results.flatMap((r, i) => (Result.isFailure(r) ? (chunks[i] ?? []).map((f) => f.path) : []))
     if (reviews.length === 0) return yield* new Failed({ message: failures[0] ?? "the agent returned nothing" })
 
     const findings = triage(
@@ -250,34 +279,34 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
     const review = yield* save(id, {
       findings,
+      unreviewed,
       summary,
-      durationMs: Date.now() - started,
+      durationMs: (yield* Clock.currentTimeMillis) - started,
       error:
         [codeProblem, failures.length > 0 ? `${failures.length} of ${chunks.length} chunks failed: ${failures[0]}` : undefined].filter(Boolean).join("; ") ||
         null,
       steps: [...steps],
     })
 
-    // a follow-up with nothing new stays quiet; a first review always says it looked
-    if (settings.postComments && !options.dryRun && (findings.length > 0 || !incremental)) {
+    // a follow-up with nothing new stays quiet; a first review always says it looked, and a partial one says so
+    if (settings.postComments && !options.dryRun && (findings.length > 0 || !incremental || unreviewed.length > 0)) {
       const agentInfo = { kind: settings.agent, model: settings.model, depth: settings.depth }
       yield* timed(
         "post",
         github.postReview(ref, {
           commitId: pr.head.sha,
-          body: reviewBody(review, skipped),
+          body: reviewBody(review, skipped, { failure: failures[0], code: codeProblem }),
           comments: findings.map((f) => ({ path: f.path, line: f.line, body: commentBody(f, agentInfo) })),
         }),
       )
       yield* save(id, { posted: true })
     }
 
-    return yield* save(id, { status: "done", durationMs: Date.now() - started, steps: [...steps] })
+    return yield* save(id, { status: "done", durationMs: (yield* Clock.currentTimeMillis) - started, steps: [...steps] })
   })
 
-  const run = Effect.fn("Reviewer.run")(function* (ref: PrRef, options: StartOptions) {
-    const settings = { ...(yield* store.settings), ...options.overrides }
-    const created = yield* store.create({
+  const record = Effect.fn("Reviewer.record")(function* (ref: PrRef, options: StartOptions, settings: Settings) {
+    return yield* store.create({
       repo: `${ref.owner}/${ref.repo}`,
       number: ref.number,
       title: "",
@@ -294,15 +323,22 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       files: 0,
       skippedFiles: 0,
       chunks: 0,
-      startedAt: Date.now(),
+      startedAt: yield* Clock.currentTimeMillis,
       durationMs: null,
       summary: "",
       findings: [],
+      unreviewed: [],
       steps: [],
       error: null,
     })
+  })
+
+  const run = Effect.fn("Reviewer.run")(function* (ref: PrRef, options: StartOptions) {
+    const settings = { ...(yield* store.settings), ...options.overrides }
+    const created = yield* record(ref, options, settings)
     yield* PubSub.publish(changes, created)
-    const elapsed = () => Date.now() - created.startedAt
+    const finish = (patch: Partial<Omit<Review, "id">>) =>
+      Clock.currentTimeMillis.pipe(Effect.flatMap((now) => save(created.id, { ...patch, durationMs: now - created.startedAt })))
 
     // the panel on github follows the review: "reviewing at high…", then the result. it's written
     // alongside the review, never in its way, and only for reviews that will be posted
@@ -317,17 +353,17 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
         : Effect.void
 
     const review = yield* pipeline(ref, created.id, settings, options, reviewing).pipe(
-      Effect.catchTag("Skip", (skip) => save(created.id, { status: "skipped", summary: skip.reason, durationMs: elapsed() })),
-      Effect.catch((error) =>
-        save(created.id, { status: "failed", durationMs: elapsed(), error: error._tag === "Failed" ? error.message : `${error._tag}: ${error.message}` }),
+      Effect.catchTag("Skip", (skip) => finish({ status: "skipped", summary: skip.reason })),
+      Effect.catchTag(["Failed", "GitHubError"], (error) =>
+        finish({ status: "failed", error: error._tag === "Failed" ? error.message : `${error._tag}: ${error.message}` }),
       ),
       // cancelled, or replaced by a newer review: the comment on github says so instead of "reviewing…"
       Effect.onInterrupt(() =>
-        stopping
-          ? Effect.void
-          : save(created.id, { status: "cancelled", durationMs: elapsed() }).pipe(
-              Effect.flatMap((review) => (shown ? panel.show(ref, { kind: "finished", review }) : Effect.void)),
-            ),
+        finish({ status: "cancelled" }).pipe(
+          Effect.flatMap((review) => (shown ? panel.show(ref, { kind: "finished", review }) : Effect.void)),
+          Effect.catchTag("StoreError", (error) => Effect.logError("couldn't persist review cancellation", error)),
+          Effect.when(Effect.map(Ref.get(stopping), (stopping) => !stopping)),
+        ),
       ),
       Effect.annotateLogs({ pr: prKey(ref) }),
     )
@@ -340,19 +376,42 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
   const cancel = (ref: PrRef) => FiberMap.remove(running, prKey(ref))
 
+  // too many reviews at once: this one is recorded as skipped (the dashboard and github's comment
+  // say why, and the boxes are there to try again) instead of waiting in a queue that only grows
+  const turnAway = Effect.fn("Reviewer.turnAway")(function* (ref: PrRef, options: StartOptions, queued: number) {
+    const settings = { ...(yield* store.settings), ...options.overrides }
+    const created = yield* record(ref, options, settings)
+    const review = yield* save(created.id, {
+      status: "skipped",
+      summary: `glance is busy (${queued} reviews running or waiting): try again in a few minutes`,
+      durationMs: 0,
+    })
+    yield* Effect.logWarning(`turned away ${prKey(ref)}: ${queued} reviews running or waiting (MAX_QUEUED_REVIEWS)`)
+    if (settings.postComments && !options.dryRun) yield* panel.show(ref, { kind: "finished", review })
+  })
+
   // the one it replaces is cancelled first (and its comment written), then this one starts
-  const start = (ref: PrRef, options: StartOptions) => cancel(ref).pipe(Effect.andThen(FiberMap.run(running, prKey(ref))(run(ref, options))), Effect.asVoid)
+  const start = Effect.fn("Reviewer.start")(function* (ref: PrRef, options: StartOptions) {
+    const queued = yield* FiberMap.size(running)
+    // replacing a running review doesn't add to the queue
+    if (queued >= limits.maxQueued && !(yield* FiberMap.has(running, prKey(ref)))) return yield* turnAway(ref, options, queued)
+    yield* cancel(ref)
+    yield* FiberMap.run(
+      running,
+      prKey(ref),
+    )(run(ref, options).pipe(Effect.catchTag("StoreError", (error) => Effect.logError("review persistence failed", error))))
+  }, Semaphore.withPermit(admissions))
 
   // reviews a stop or a crash cut short: a recent one starts again, once; older ones (or one that
   // was itself a restart, which may be what crashed) are marked failed, and their comment says so
   const resume = Effect.fn("Reviewer.resume")(function* (review: Review) {
     const [owner = "", repo = ""] = review.repo.split("/")
     const ref = { owner, repo, number: review.number }
-    const again = Date.now() - review.startedAt < RESUME_WITHIN_MS && !review.trigger.startsWith("resumed")
+    const again = (yield* Clock.currentTimeMillis) - review.startedAt < RESUME_WITHIN_MS && !review.trigger.startsWith("resumed")
     const ended = yield* save(review.id, {
       status: again ? "cancelled" : "failed",
       error: again ? "glance restarted mid-review: reviewing again" : "glance restarted mid-review",
-      durationMs: Date.now() - review.startedAt,
+      durationMs: (yield* Clock.currentTimeMillis) - review.startedAt,
     })
     if (again)
       return yield* start(ref, {

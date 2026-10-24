@@ -8,13 +8,18 @@ import { GitHub } from "./github.ts"
 import { Panel } from "./panel.ts"
 import { Reviewer } from "./reviewer.ts"
 import { Store } from "./store.ts"
+import { Triggers } from "./triggers.ts"
 
 export const layer = (config: AppConfig) => {
   const Adapters = Layer.mergeAll(
     GitHub.layer(config.github),
     Agent.layer(config.agent),
-    Store.layer({ defaults: config.defaults }).pipe(Layer.provide(Database.layer({ url: config.databaseUrl }))),
+    // the database stays exposed too: signing in (auth.ts) starts once it has been migrated
+    Store.layer({ defaults: config.defaults }).pipe(Layer.provideMerge(Database.layer({ url: config.databaseUrl }))),
   )
   // the http routes use the store, the agents and the panel too, so they stay exposed
-  return Reviewer.layer(config.limits).pipe(Layer.provideMerge(Layer.mergeAll(Panel.layer, Checkout.layer(config.checkouts))), Layer.provideMerge(Adapters))
+  return Reviewer.layer(config.limits).pipe(
+    Layer.provideMerge(Layer.mergeAll(Panel.layer, Checkout.layer(config.checkouts), Triggers.layer(config.triggers))),
+    Layer.provideMerge(Adapters),
+  )
 }

@@ -72,6 +72,13 @@ export const StatusBadge = ({ review }: { review: Review }) => {
         </Badge>
       )
     case "done":
+      // part of it wasn't reviewed: "clean" would say more than glance knows
+      if (review.unreviewed.length > 0)
+        return (
+          <Badge variant="warning" appearance="dot">
+            Partial{review.findings.length > 0 ? ` · ${review.findings.length} ${review.findings.length === 1 ? "issue" : "issues"}` : ""}
+          </Badge>
+        )
       return review.findings.length === 0 ? (
         <Badge variant="success" appearance="dot">
           Clean

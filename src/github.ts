@@ -1,5 +1,5 @@
-import { createSign } from "node:crypto"
-import { Cache, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
+import { createPrivateKey, createSign } from "node:crypto"
+import { Cache, Clock, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GitHubError, type PrRef } from "./domain.ts"
@@ -13,6 +13,10 @@ export const PullRequest = Schema.Struct({
   head: Schema.Struct({ sha: Schema.String }),
 })
 export interface PullRequest extends Schema.Schema.Type<typeof PullRequest> {}
+
+/** what someone may do in a repository, least to most */
+export type Permission = "none" | "read" | "triage" | "write" | "maintain" | "admin"
+const PERMISSIONS: ReadonlyArray<Permission> = ["none", "read", "triage", "write", "maintain", "admin"]
 
 export interface ReviewComment {
   readonly path: string
@@ -40,6 +44,8 @@ export interface Interface {
   readonly updateComment: (pr: PrRef, id: number, body: string) => Effect.Effect<void, GitHubError>
   /** 👀 on a comment: the command was seen */
   readonly acknowledge: (pr: PrRef, commentId: number) => Effect.Effect<void, GitHubError>
+  /** someone's permission on the pull request's repository: none when they aren't a collaborator */
+  readonly permission: (pr: PrRef, login: string) => Effect.Effect<Permission, GitHubError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
@@ -59,6 +65,7 @@ export interface Options {
 const decodePullRequest = Schema.decodeUnknownEffect(PullRequest)
 const decodeComment = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
 const decodeInstallation = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
+const decodePermission = Schema.decodeUnknownEffect(Schema.Struct({ permission: Schema.String, role_name: Schema.optional(Schema.String) }))
 const decodeAccessToken = Schema.decodeUnknownEffect(Schema.Struct({ token: Schema.String, expires_at: Schema.String }))
 
 /** what an app proves it's the app with: a jwt signed with its private key, good for ten minutes */
@@ -125,12 +132,27 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const tokenFor: (pr: PrRef) => Effect.Effect<string, GitHubError> = yield* Option.isSome(appId) && Option.isSome(privateKey)
     ? Effect.gen(function* () {
+        // Parse operator-supplied key material in the typed channel during layer acquisition.
+        yield* Effect.try({
+          try: () => createPrivateKey(privateKey.value),
+          catch: (cause) =>
+            new GitHubError({ operation: "auth", message: `invalid GitHub App private key: ${cause instanceof Error ? cause.message : String(cause)}` }),
+        })
         const asApp = (request: HttpClientRequest.HttpClientRequest) =>
-          HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, Date.now())).pipe(HttpClientRequest.acceptJson)
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((now) =>
+              Effect.try({
+                try: () => HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, now)).pipe(HttpClientRequest.acceptJson),
+                catch: (cause) =>
+                  new GitHubError({ operation: "auth", message: `couldn't sign GitHub App token: ${cause instanceof Error ? cause.message : String(cause)}` }),
+              }),
+            ),
+          )
         // which installation reaches a repository changes rarely: an hour
         const installations = yield* Cache.makeWith(
           (repo: string) =>
-            execute(reader, "installation", asApp(HttpClientRequest.get(`/repos/${repo}/installation`))).pipe(
+            asApp(HttpClientRequest.get(`/repos/${repo}/installation`)).pipe(
+              Effect.flatMap((request) => execute(reader, "installation", request)),
               Effect.flatMap((r) => json("installation", r, decodeInstallation)),
               Effect.map((i) => i.id),
             ),
@@ -138,15 +160,13 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
         )
         // an installation token lasts an hour: kept until five minutes before it runs out
         const tokens = yield* Cache.makeWith(
-          (installation: number) =>
-            execute(base, "accessToken", asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`))).pipe(
-              Effect.flatMap((r) => json("accessToken", r, decodeAccessToken)),
-            ),
-          {
-            capacity: 1024,
-            timeToLive: (exit) =>
-              Exit.isSuccess(exit) ? Duration.millis(Math.max(0, Date.parse(exit.value.expires_at) - Date.now() - 5 * 60_000)) : Duration.zero,
-          },
+          Effect.fnUntraced(function* (installation: number) {
+            const response = yield* execute(base, "accessToken", yield* asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`)))
+            const { token, expires_at } = yield* json("accessToken", response, decodeAccessToken)
+            const now = yield* Clock.currentTimeMillis
+            return { token, keepFor: Duration.millis(Math.max(0, Date.parse(expires_at) - now - 5 * 60_000)) }
+          }),
+          { capacity: 1024, timeToLive: (exit) => (Exit.isSuccess(exit) ? exit.value.keepFor : Duration.zero) },
         )
         return (pr: PrRef) =>
           Cache.get(installations, `${pr.owner}/${pr.repo}`).pipe(
@@ -173,8 +193,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const pullRequest = Effect.fn("GitHub.pullRequest")(function* (pr: PrRef) {
     const response = yield* send(reader, "pullRequest", pr, HttpClientRequest.get(`${path(pr)}/pulls/${pr.number}`).pipe(HttpClientRequest.acceptJson))
-    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
-    return yield* decodePullRequest(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
+    return yield* json("pullRequest", response, decodePullRequest)
   })
 
   const diff = Effect.fn("GitHub.diff")(function* (pr: PrRef) {
@@ -247,8 +266,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       pr,
       HttpClientRequest.post(`${path(pr)}/issues/${pr.number}/comments`).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bodyJsonUnsafe({ body })),
     )
-    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
-    const comment = yield* decodeComment(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
+    const comment = yield* json("createComment", response, decodeComment)
     return comment.id
   })
 
@@ -261,6 +279,26 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
     )
   })
 
+  const permission = Effect.fn("GitHub.permission")(function* (pr: PrRef, login: string): Effect.fn.Return<Permission, GitHubError> {
+    const response = yield* send(
+      reader,
+      "permission",
+      pr,
+      HttpClientRequest.get(`${path(pr)}/collaborators/${encodeURIComponent(login)}/permission`).pipe(HttpClientRequest.acceptJson),
+    ).pipe(
+      Effect.map(Option.some),
+      // not a collaborator (or not a user at all)
+      Effect.catchIf(
+        (e) => e.status === 404,
+        () => Effect.succeedNone,
+      ),
+    )
+    if (Option.isNone(response)) return "none"
+    const body = yield* json("permission", response.value, decodePermission)
+    // role_name tells triage and maintain apart; permission folds them into read and write
+    return PERMISSIONS.find((p) => p === body.role_name) ?? PERMISSIONS.find((p) => p === body.permission) ?? "none"
+  })
+
   // github.com's api lives on api.github.com; enterprise's under /api/v3 of the same host
   const webUrl = options.apiUrl === "https://api.github.com" ? "https://github.com" : options.apiUrl.replace(/\/api\/v3\/?$/, "")
   const gitRemote = (pr: PrRef) =>
@@ -269,7 +307,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       authorization: Redacted.make(`Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`),
     }))
 
-  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge })
+  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge, permission })
 })
 
 export const layer = (options: Options) => Layer.effect(Service, make(options)).pipe(Layer.provide(FetchHttpClient.layer))
