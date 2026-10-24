@@ -28,14 +28,21 @@ Do not copy APIs from a different Effect release just because a guide uses them.
   at most one pending pass. Scope closure interrupts work before releasing its services.
 - Admission and replacement are serialized with a semaphore; actual agent concurrency
   has a separate semaphore. Agent and checkout subprocesses have scoped lifetimes.
+  Per-repository git locks live in an `RcMap`, released once nothing holds or waits for them.
 - The instance lock uses a reserved Effect PostgreSQL connection for the layer's lifetime.
   Its separate pool closes on shutdown, releasing the session advisory lock.
 - Permission, authentication and installation lookups use bounded Effect caches. Failed
   authentication lookups are not cached; after an authorization answer expires, an
   unavailable membership service refuses access instead of extending a stale grant.
+- Cache keys are plain objects (`{ owner, repo, sha }`): Effect compares them structurally,
+  so there is no string encoding to split back apart.
 - Checkout caching deduplicates in-flight downloads only. Completed lookups expire
   immediately so each later access checks the filesystem after pruning.
-- Review timestamps and durations use Effect's `Clock` so they follow the injected clock.
+- Review timestamps and durations, GitHub App tokens and checkout recency use Effect's `Clock`
+  so they follow the injected clock. State shared across effects lives in `Ref` or `Deferred`,
+  not closure variables.
+- The CLI (`src/cli.ts`) is an `effect/cli` command: flags are validated, and a failed review
+  fails the program, so `runMain` exits 1 after the layers' finalizers have run.
 
 Better Auth remains a Promise adapter: it requires an asynchronous Drizzle database and
 owns OAuth/session callbacks. Its small Bun SQL pool is acquired and closed by a layer;

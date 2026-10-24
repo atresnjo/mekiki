@@ -8,7 +8,25 @@
 //
 // bounded: a download gives up after `timeout`, git may write no more than `maxMegabytes` (the
 // tarball may download no more), and everything here together stays under `diskBudgetMegabytes`
-import { Cache, Context, Duration, Effect, Exit, FileSystem, Layer, Option, Queue, Redacted, Ref, Schedule, Schema, Semaphore, Stream } from "effect"
+import {
+  Cache,
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Queue,
+  RcMap,
+  Redacted,
+  Ref,
+  Schedule,
+  Schema,
+  Semaphore,
+  Stream,
+} from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { PrRef } from "./domain.ts"
 import { childEnv } from "./agent.ts"
@@ -68,19 +86,18 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
   const capped = <A>(effect: Effect.Effect<A, CheckoutError>, paths: ReadonlyArray<string>, undo: Effect.Effect<void> = Effect.void) =>
     Effect.gen(function* () {
       const before = yield* kilobytes(paths).pipe(Effect.orElseSucceed(() => 0))
-      let over = false
+      const over = yield* Ref.make(false)
       const check = kilobytes(paths).pipe(
         Effect.orElseSucceed(() => before),
-        Effect.flatMap((now) => {
-          over = now - before > options.maxMegabytes * 1024
-          return over ? Effect.fail(fail(`the repository is over ${options.maxMegabytes} MB`)) : Effect.void
-        }),
+        Effect.map((now) => now - before > options.maxMegabytes * 1024),
+        Effect.tap((isOver) => Ref.set(over, isOver)),
+        Effect.flatMap((isOver) => (isOver ? Effect.fail(fail(`the repository is over ${options.maxMegabytes} MB`)) : Effect.void)),
       )
       const watch = check.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(1))), Effect.andThen(Effect.never))
       // once the race is settled, git has stopped: only then is what it wrote removed
       return yield* Effect.raceFirst(effect, watch).pipe(
         Effect.tap(() => check),
-        Effect.tapError(() => (over ? undo : Effect.void)),
+        Effect.tapError(() => undo.pipe(Effect.when(Ref.get(over)))),
       )
     })
 
@@ -104,13 +121,23 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
       return stdout
     }).pipe(Effect.scoped)
 
-  // one git operation per repository at a time: two fetches into the same repo trip over its locks
-  const locks = new Map<string, Semaphore.Semaphore>()
-  const locked = (key: string) => {
-    let lock = locks.get(key)
-    if (!lock) locks.set(key, (lock = Semaphore.makeUnsafe(1)))
-    return Semaphore.withPermit(lock)
-  }
+  // one git operation per repository at a time: two fetches into the same repo trip over its locks.
+  // a repository's lock is kept while something holds or waits for it
+  const locks = yield* RcMap.make({ lookup: (_repo: string) => Semaphore.make(1) })
+  const locked =
+    (repo: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      RcMap.get(locks, repo).pipe(
+        Effect.flatMap((lock) => Semaphore.withPermit(lock)(effect)),
+        Effect.scoped,
+      )
+
+  /** most recently used: the last to be pruned */
+  const touch = (path: string) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => fs.utimes(path, new Date(now), new Date(now))),
+      Effect.ignore,
+    )
 
   const viaGit = Effect.fn("Checkout.viaGit")(function* (key: Key, into: string) {
     const remote = yield* github.gitRemote(key.pr).pipe(Effect.mapError((e) => fail(e.message)))
@@ -138,7 +165,7 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     yield* locked(repo)(
       Effect.gen(function* () {
         // most recently used: the last to go when the disk budget is over
-        yield* fs.utimes(repo, new Date(), new Date()).pipe(Effect.ignore)
+        yield* touch(repo)
         if (!(yield* fs.exists(`${repo}/HEAD`).pipe(Effect.orElseSucceed(() => false)))) {
           yield* fs.makeDirectory(repo, { recursive: true }).pipe(Effect.mapError((e) => fail(e.message)))
           yield* git(["init", "-q", "--bare", repo], "git init")
@@ -182,13 +209,14 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     // the stream's failure (a dropped download, a repo over the limit) can't travel through tar's
     // stdin: it ends the input early and is reported once tar is done
     const failure = yield* Ref.make(Option.none<CheckoutError>())
-    let bytes = 0
+    const bytes = yield* Ref.make(0)
     const input = github.tarball(key.pr, key.sha).pipe(
       Stream.mapError((e) => fail(`couldn't download the code: ${e.message}`)),
-      Stream.tap((chunk) => {
-        bytes += chunk.length
-        return bytes > limit ? Effect.fail(fail(`the repository is over ${options.maxMegabytes} MB`)) : Effect.void
-      }),
+      Stream.tap((chunk) =>
+        Ref.updateAndGet(bytes, (n) => n + chunk.length).pipe(
+          Effect.flatMap((n) => (n > limit ? Effect.fail(fail(`the repository is over ${options.maxMegabytes} MB`)) : Effect.void)),
+        ),
+      ),
       Stream.catchTag("CheckoutError", (e) => Stream.fromEffect(Ref.set(failure, Option.some(e))).pipe(Stream.drain)),
     )
     yield* fs.makeDirectory(into, { recursive: true }).pipe(Effect.mapError((e) => fail(e.message)))
@@ -201,7 +229,7 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     if (Exit.isFailure(extracted)) return yield* extracted
     // a symlink in the repository could point the agent at files outside it
     yield* run(ChildProcess.make("find", [into, "-type", "l", "-delete"], { env: childEnv() }), "removing symlinks")
-    yield* Effect.annotateCurrentSpan({ bytes })
+    yield* Effect.annotateCurrentSpan({ bytes: yield* Ref.get(bytes) })
   })
 
   // the least recently used commits past `keep` go; then, while everything together is over the
@@ -258,8 +286,7 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     Effect.gen(function* () {
       const dir = target(key)
       if (yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false))) {
-        // most recently used: the last to be pruned
-        yield* fs.utimes(dir, new Date(), new Date()).pipe(Effect.ignore)
+        yield* touch(dir)
         return dir
       }
       // written beside its target, then renamed into place: a half-written checkout is never used
@@ -285,18 +312,15 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
       return dir
     }).pipe(Effect.withSpan("Checkout.fetch", { attributes: { repo: `${key.pr.owner}/${key.pr.repo}`, sha: key.sha } }))
 
-  // reviews of the same commit at the same moment share one download. the key is a string:
-  // the cache compares keys by value, and two equal objects aren't. Completed lookups expire
-  // immediately: the filesystem is authoritative, since pruning can remove a checkout at any time
+  // reviews of the same commit at the same moment share one download: keys compare by value, and
+  // the pull request's number isn't in them (two pull requests can share a commit). Completed lookups
+  // expire immediately: the filesystem is authoritative, since pruning can remove a checkout at any time
   const inFlight = yield* Cache.makeWith(
-    (key: string) => {
-      const [owner = "", repo = "", sha = ""] = key.split("/")
-      return fetch({ pr: { owner, repo, number: 0 }, sha })
-    },
+    ({ owner, repo, sha }: { readonly owner: string; readonly repo: string; readonly sha: string }) => fetch({ pr: { owner, repo, number: 0 }, sha }),
     { capacity: 64, timeToLive: () => Duration.zero },
   )
 
-  const at = (pr: PrRef, sha: string) => Cache.get(inFlight, `${pr.owner}/${pr.repo}/${sha}`)
+  const at = (pr: PrRef, sha: string) => Cache.get(inFlight, { owner: pr.owner, repo: pr.repo, sha })
 
   return Service.of({ at })
 })

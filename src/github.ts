@@ -1,5 +1,5 @@
 import { createPrivateKey, createSign } from "node:crypto"
-import { Cache, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
+import { Cache, Clock, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { GitHubError, type PrRef } from "./domain.ts"
@@ -139,11 +139,15 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
             new GitHubError({ operation: "auth", message: `invalid GitHub App private key: ${cause instanceof Error ? cause.message : String(cause)}` }),
         })
         const asApp = (request: HttpClientRequest.HttpClientRequest) =>
-          Effect.try({
-            try: () => HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, Date.now())).pipe(HttpClientRequest.acceptJson),
-            catch: (cause) =>
-              new GitHubError({ operation: "auth", message: `couldn't sign GitHub App token: ${cause instanceof Error ? cause.message : String(cause)}` }),
-          })
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((now) =>
+              Effect.try({
+                try: () => HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, now)).pipe(HttpClientRequest.acceptJson),
+                catch: (cause) =>
+                  new GitHubError({ operation: "auth", message: `couldn't sign GitHub App token: ${cause instanceof Error ? cause.message : String(cause)}` }),
+              }),
+            ),
+          )
         // which installation reaches a repository changes rarely: an hour
         const installations = yield* Cache.makeWith(
           (repo: string) =>
@@ -156,16 +160,13 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
         )
         // an installation token lasts an hour: kept until five minutes before it runs out
         const tokens = yield* Cache.makeWith(
-          (installation: number) =>
-            asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`)).pipe(
-              Effect.flatMap((request) => execute(base, "accessToken", request)),
-              Effect.flatMap((r) => json("accessToken", r, decodeAccessToken)),
-            ),
-          {
-            capacity: 1024,
-            timeToLive: (exit) =>
-              Exit.isSuccess(exit) ? Duration.millis(Math.max(0, Date.parse(exit.value.expires_at) - Date.now() - 5 * 60_000)) : Duration.zero,
-          },
+          Effect.fnUntraced(function* (installation: number) {
+            const response = yield* execute(base, "accessToken", yield* asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`)))
+            const { token, expires_at } = yield* json("accessToken", response, decodeAccessToken)
+            const now = yield* Clock.currentTimeMillis
+            return { token, keepFor: Duration.millis(Math.max(0, Date.parse(expires_at) - now - 5 * 60_000)) }
+          }),
+          { capacity: 1024, timeToLive: (exit) => (Exit.isSuccess(exit) ? exit.value.keepFor : Duration.zero) },
         )
         return (pr: PrRef) =>
           Cache.get(installations, `${pr.owner}/${pr.repo}`).pipe(
@@ -192,8 +193,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const pullRequest = Effect.fn("GitHub.pullRequest")(function* (pr: PrRef) {
     const response = yield* send(reader, "pullRequest", pr, HttpClientRequest.get(`${path(pr)}/pulls/${pr.number}`).pipe(HttpClientRequest.acceptJson))
-    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
-    return yield* decodePullRequest(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "pullRequest", message: e.message })))
+    return yield* json("pullRequest", response, decodePullRequest)
   })
 
   const diff = Effect.fn("GitHub.diff")(function* (pr: PrRef) {
@@ -266,8 +266,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       pr,
       HttpClientRequest.post(`${path(pr)}/issues/${pr.number}/comments`).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bodyJsonUnsafe({ body })),
     )
-    const json = yield* response.json.pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
-    const comment = yield* decodeComment(json).pipe(Effect.mapError((e) => new GitHubError({ operation: "createComment", message: e.message })))
+    const comment = yield* json("createComment", response, decodeComment)
     return comment.id
   })
 

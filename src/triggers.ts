@@ -38,18 +38,15 @@ export const make = Effect.fn("Triggers.make")(function* (options: AppConfig["tr
   const github = yield* GitHub.Service
   const limiter = yield* RateLimiter.RateLimiter
 
-  // a permission changes rarely: five minutes. a failed lookup isn't kept
+  // a permission changes rarely: five minutes. a failed lookup isn't kept. keys compare by value
   const permissions = yield* Cache.makeWith(
-    (key: string) => {
-      const [owner = "", repo = "", login = ""] = key.split("/")
-      return github.permission({ owner, repo, number: 0 }, login)
-    },
+    ({ owner, repo, login }: { readonly owner: string; readonly repo: string; readonly login: string }) => github.permission({ owner, repo, number: 0 }, login),
     { capacity: 4096, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(5) : Duration.zero) },
   )
 
   const permitted = Effect.fn("Triggers.permitted")(function* (pr: PrRef, sender: Sender) {
     if (sender.type === "Bot") return { ok: false, reason: `${sender.login} is a bot` } as const
-    const has = yield* Cache.get(permissions, `${pr.owner}/${pr.repo}/${sender.login}`).pipe(
+    const has = yield* Cache.get(permissions, { owner: pr.owner, repo: pr.repo, login: sender.login }).pipe(
       // github didn't say: refused, never let through
       Effect.catch((e) =>
         Effect.logWarning(`couldn't look up ${sender.login}'s permission on ${pr.owner}/${pr.repo}: ${e.message}`).pipe(Effect.as("none" as const)),

@@ -103,131 +103,125 @@ const handlers = (config: AppConfig) =>
         ),
       )
 
-    const webhook = (request: HttpServerRequest.HttpServerRequest) =>
-      Effect.suspend(() => {
-        const delivery = request.headers["x-github-delivery"]
-        let claimed = false
-        const failed = (cause: unknown) =>
-          Effect.logError("webhook failed", cause).pipe(
-            Effect.andThen(
-              claimed
-                ? store
-                    .releaseDelivery(delivery ?? "")
-                    .pipe(Effect.catchTag("StoreError", (error) => Effect.logError("couldn't release webhook delivery", error)))
-                : Effect.void,
-            ),
-            Effect.as(problem(500, "glance failed handling this delivery")),
+    /** what the delivery asks for, once it's known to be github's and new */
+    const handle = Effect.fnUntraced(function* (event: string | undefined, body: string) {
+      const settings = yield* store.settings
+
+      if (event === "pull_request") {
+        const payload = yield* decodeJson(PullRequestEvent)(body)
+        const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.number }
+        if (payload.action === "closed") yield* reviewer.cancel(ref)
+        else if (payload.action === "labeled" && payload.label && depthIn(payload.label.name)) {
+          // adding glance:high is asking for a review at that depth, now
+          const depth = depthIn(payload.label.name)
+          const verdict = yield* triggers.allow(ref, payload.sender)
+          if (!verdict.ok) return yield* refused(verdict, payload.sender)
+          yield* reviewer.start(ref, { trigger: `label ${depth}`, overrides: depthOverride(depth) })
+          return json({ ok: true, reviewing: true, depth }, 202)
+        } else if (REVIEW_ACTIONS.has(payload.action)) {
+          const last = yield* store.lastDone(`${ref.owner}/${ref.repo}`, ref.number)
+          // a stranger's pull request (from a fork, say) isn't reviewed on its own: it gets the
+          // checkboxes, for someone with the permission to tick
+          const automatic = settings.mode === "auto" ? yield* triggers.allowAutomatic(ref, payload.pull_request.user) : undefined
+          if (automatic && !automatic.ok) yield* Effect.logInfo(`asking instead of reviewing ${ref.owner}/${ref.repo}#${ref.number}: ${automatic.reason}`)
+          if (automatic?.ok) {
+            // follow-ups keep the depth this pull request was last reviewed at
+            const depth = labelDepth(payload.pull_request.labels) ?? Option.getOrUndefined(Option.map(last, (r) => r.depth))
+            yield* reviewer.start(ref, { trigger: payload.action, automatic: true, overrides: depthOverride(depth) })
+            return json({ ok: true, reviewing: true, depth: depth ?? settings.depth }, 202)
+          }
+          // ask: show the checkboxes (and whether there's something new to review) and wait for a tick
+          if (settings.postComments && !payload.pull_request.draft) {
+            yield* panel.show(
+              ref,
+              Option.match(last, {
+                onNone: () => ({ kind: "waiting" }) as const,
+                onSome: (review) => ({ kind: "finished", review, head: payload.pull_request.head.sha }) as const,
+              }),
+            )
+            // fetch the code now, while the pull request waits for a tick: the review then starts with it on disk
+            yield* FiberSet.run(
+              background,
+              checkout.at(ref, payload.pull_request.head.sha).pipe(
+                Effect.catchTag("CheckoutError", (error) => Effect.logWarning("checkout prefetch failed", error)),
+                Effect.asVoid,
+              ),
+            )
+            return json({ ok: true, reviewing: false, asked: true })
+          }
+        }
+      } else if (event === "issue_comment") {
+        const payload = yield* decodeJson(CommentEvent)(body)
+        const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.issue.number }
+        const ticked =
+          payload.action === "edited" && payload.issue.pull_request !== undefined ? tickedDepth(payload.comment.body, payload.changes?.body?.from) : undefined
+        if (ticked) {
+          // a box ticked in glance's comment, and only glance's: a copy of the panel elsewhere ticks nothing
+          const panelId = yield* store.panel(`${ref.owner}/${ref.repo}`, ref.number)
+          if (Option.getOrUndefined(panelId) !== payload.comment.id) return json({ ok: true, reviewing: false, refused: "not glance's comment" })
+          const verdict = yield* triggers.allow(ref, payload.sender)
+          if (!verdict.ok) return yield* refused(verdict, payload.sender)
+          // review at that depth. the panel unticks it as it starts
+          yield* reviewer.start(ref, { trigger: `checkbox ${ticked}`, overrides: { depth: ticked } })
+          return json({ ok: true, reviewing: true, depth: ticked }, 202)
+        }
+        if (
+          payload.action === "created" &&
+          payload.issue.pull_request !== undefined &&
+          !payload.comment.body.includes(MARKER) &&
+          COMMAND.test(payload.comment.body)
+        ) {
+          const verdict = yield* triggers.allow(ref, payload.comment.user)
+          if (!verdict.ok) return yield* refused(verdict, payload.comment.user)
+          // a depth in the comment beats the label, which beats the default
+          const depth = depthIn(payload.comment.body) ?? labelDepth(payload.issue.labels)
+          yield* Effect.all(
+            [
+              reviewer.start(ref, { trigger: depth ? `comment ${depth}` : "comment", overrides: depthOverride(depth) }),
+              github.acknowledge(ref, payload.comment.id).pipe(Effect.ignore),
+            ],
+            { concurrency: "unbounded" },
           )
-        return Effect.gen(function* () {
-          if (Option.isNone(config.github.webhookSecret)) return problem(503, "set GITHUB_WEBHOOK_SECRET to enable the webhook")
-          if (Number(request.headers["content-length"] ?? 0) > config.github.maxWebhookBytes) return problem(413, "payload too large")
-          const body = yield* readCapped(request, config.github.maxWebhookBytes)
-          const signature = `sha256=${createHmac("sha256", Redacted.value(config.github.webhookSecret.value)).update(body).digest("hex")}`
-          if (!equal(request.headers["x-hub-signature-256"] ?? "", signature)) return problem(401, "bad signature")
+          return json({ ok: true, reviewing: true, depth: depth ?? settings.depth }, 202)
+        }
+      }
+      return json({ ok: true, reviewing: false })
+    })
 
-          // github redelivers on request (and sometimes on its own): each delivery is acted on once
-          if (delivery) {
-            if (!(yield* store.claimDelivery(delivery))) return json({ ok: true, duplicate: true })
-            claimed = true
-          }
+    /** glance's own failure: logged, and github sees a 500 (and shows it in the delivery log) */
+    const failed = (cause: unknown) => Effect.logError("webhook failed", cause).pipe(Effect.as(problem(500, "glance failed handling this delivery")))
 
-          const event = request.headers["x-github-event"]
-          const settings = yield* store.settings
+    const webhook = Effect.fn("Webhook.github")(
+      function* (request: HttpServerRequest.HttpServerRequest) {
+        if (Option.isNone(config.github.webhookSecret)) return problem(503, "set GITHUB_WEBHOOK_SECRET to enable the webhook")
+        if (Number(request.headers["content-length"] ?? 0) > config.github.maxWebhookBytes) return problem(413, "payload too large")
+        const body = yield* readCapped(request, config.github.maxWebhookBytes)
+        const signature = `sha256=${createHmac("sha256", Redacted.value(config.github.webhookSecret.value)).update(body).digest("hex")}`
+        if (!equal(request.headers["x-hub-signature-256"] ?? "", signature)) return problem(401, "bad signature")
 
-          if (event === "pull_request") {
-            const payload = yield* decodeJson(PullRequestEvent)(body)
-            const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.number }
-            if (payload.action === "closed") yield* reviewer.cancel(ref)
-            else if (payload.action === "labeled" && payload.label && depthIn(payload.label.name)) {
-              // adding glance:high is asking for a review at that depth, now
-              const depth = depthIn(payload.label.name)
-              const verdict = yield* triggers.allow(ref, payload.sender)
-              if (!verdict.ok) return yield* refused(verdict, payload.sender)
-              yield* reviewer.start(ref, { trigger: `label ${depth}`, overrides: depthOverride(depth) })
-              return json({ ok: true, reviewing: true, depth }, 202)
-            } else if (REVIEW_ACTIONS.has(payload.action)) {
-              const last = yield* store.lastDone(`${ref.owner}/${ref.repo}`, ref.number)
-              // a stranger's pull request (from a fork, say) isn't reviewed on its own: it gets the
-              // checkboxes, for someone with the permission to tick
-              const automatic = settings.mode === "auto" ? yield* triggers.allowAutomatic(ref, payload.pull_request.user) : undefined
-              if (automatic && !automatic.ok) yield* Effect.logInfo(`asking instead of reviewing ${ref.owner}/${ref.repo}#${ref.number}: ${automatic.reason}`)
-              if (automatic?.ok) {
-                // follow-ups keep the depth this pull request was last reviewed at
-                const depth = labelDepth(payload.pull_request.labels) ?? Option.getOrUndefined(Option.map(last, (r) => r.depth))
-                yield* reviewer.start(ref, { trigger: payload.action, automatic: true, overrides: depthOverride(depth) })
-                return json({ ok: true, reviewing: true, depth: depth ?? settings.depth }, 202)
-              }
-              // ask: show the checkboxes (and whether there's something new to review) and wait for a tick
-              if (settings.postComments && !payload.pull_request.draft) {
-                yield* panel.show(
-                  ref,
-                  Option.match(last, {
-                    onNone: () => ({ kind: "waiting" }) as const,
-                    onSome: (review) => ({ kind: "finished", review, head: payload.pull_request.head.sha }) as const,
-                  }),
-                )
-                // fetch the code now, while the pull request waits for a tick: the review then starts with it on disk
-                yield* FiberSet.run(
-                  background,
-                  checkout.at(ref, payload.pull_request.head.sha).pipe(
-                    Effect.catchTag("CheckoutError", (error) => Effect.logWarning("checkout prefetch failed", error)),
-                    Effect.asVoid,
-                  ),
-                )
-                return json({ ok: true, reviewing: false, asked: true })
-              }
-            }
-          } else if (event === "issue_comment") {
-            const payload = yield* decodeJson(CommentEvent)(body)
-            const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.issue.number }
-            const ticked =
-              payload.action === "edited" && payload.issue.pull_request !== undefined
-                ? tickedDepth(payload.comment.body, payload.changes?.body?.from)
-                : undefined
-            if (ticked) {
-              // a box ticked in glance's comment, and only glance's: a copy of the panel elsewhere ticks nothing
-              const panelId = yield* store.panel(`${ref.owner}/${ref.repo}`, ref.number)
-              if (Option.getOrUndefined(panelId) !== payload.comment.id) return json({ ok: true, reviewing: false, refused: "not glance's comment" })
-              const verdict = yield* triggers.allow(ref, payload.sender)
-              if (!verdict.ok) return yield* refused(verdict, payload.sender)
-              // review at that depth. the panel unticks it as it starts
-              yield* reviewer.start(ref, { trigger: `checkbox ${ticked}`, overrides: { depth: ticked } })
-              return json({ ok: true, reviewing: true, depth: ticked }, 202)
-            }
-            if (
-              payload.action === "created" &&
-              payload.issue.pull_request !== undefined &&
-              !payload.comment.body.includes(MARKER) &&
-              COMMAND.test(payload.comment.body)
-            ) {
-              const verdict = yield* triggers.allow(ref, payload.comment.user)
-              if (!verdict.ok) return yield* refused(verdict, payload.comment.user)
-              // a depth in the comment beats the label, which beats the default
-              const depth = depthIn(payload.comment.body) ?? labelDepth(payload.issue.labels)
-              yield* Effect.all(
-                [
-                  reviewer.start(ref, { trigger: depth ? `comment ${depth}` : "comment", overrides: depthOverride(depth) }),
-                  github.acknowledge(ref, payload.comment.id).pipe(Effect.ignore),
-                ],
-                { concurrency: "unbounded" },
-              )
-              return json({ ok: true, reviewing: true, depth: depth ?? settings.depth }, 202)
-            }
-          }
-          return json({ ok: true, reviewing: false })
-        }).pipe(
-          // a body that didn't arrive whole, or a payload that isn't what github sends: the sender's problem
-          Effect.catchTags({
-            SchemaError: (e) => Effect.succeed(problem(400, `unexpected payload: ${e.message}`)),
-            TooLarge: () => Effect.succeed(problem(413, "payload too large")),
-            HttpServerError: (e) => Effect.succeed(problem(400, e.message)),
-          }),
-          // anything else is glance's: logged, github sees a 500 (and shows it in the delivery log), and a redelivery is acted on
-          Effect.catchTag("StoreError", failed),
-          Effect.catchDefect(failed),
-          Effect.withSpan("Webhook.github"),
+        const event = request.headers["x-github-event"]
+        const delivery = request.headers["x-github-delivery"]
+        if (!delivery) return yield* handle(event, body)
+        // github redelivers on request (and sometimes on its own): each delivery is acted on once
+        if (!(yield* store.claimDelivery(delivery))) return json({ ok: true, duplicate: true })
+        // glance failed handling it: let go of it, so a redelivery is acted on
+        const release = store
+          .releaseDelivery(delivery)
+          .pipe(Effect.catchTag("StoreError", (error) => Effect.logError("couldn't release webhook delivery", error)))
+        return yield* handle(event, body).pipe(
+          Effect.tapErrorTag("StoreError", () => release),
+          Effect.tapDefect(() => release),
         )
-      })
+      },
+      // a body that didn't arrive whole, or a payload that isn't what github sends: the sender's problem
+      Effect.catchTags({
+        SchemaError: (e) => Effect.succeed(problem(400, `unexpected payload: ${e.message}`)),
+        TooLarge: () => Effect.succeed(problem(413, "payload too large")),
+        HttpServerError: (e) => Effect.succeed(problem(400, e.message)),
+      }),
+      Effect.catchTag("StoreError", failed),
+      Effect.catchDefect(failed),
+    )
 
     return [HttpRouter.route("POST", "/api/webhooks/github", webhook)]
   })

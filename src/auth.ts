@@ -10,7 +10,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle"
 import { decryptOAuthToken } from "better-auth/oauth2"
 import type { PgAsyncDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core"
 import { drizzle } from "drizzle-orm/bun-sql"
-import { Cache, Context, Duration, Effect, Exit, FiberSet, FileSystem, Layer, Option, Redacted, Schema } from "effect"
+import { Cache, Context, Deferred, Duration, Effect, Exit, FiberSet, FileSystem, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { AppConfig } from "./config.ts"
 import { Database } from "./database.ts"
@@ -319,11 +319,9 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
   const http = yield* HttpClient.HttpClient
   const attempt = <A>(operation: string, evaluate: () => PromiseLike<A>) =>
     Effect.tryPromise({ try: evaluate, catch: (cause) => new AuthError({ operation, cause }) }).pipe(Effect.withSpan(`Auth.${operation}`))
-  let instance: Instance | undefined
-  const context = Effect.suspend(() => {
-    const auth = instance
-    return auth ? attempt("context", () => auth.$context) : Effect.fail(new AuthError({ operation: "context", cause: "auth is not initialized" }))
-  })
+  // the caches below ask better auth, and better auth's hooks ask the caches: it's handed over once it exists
+  const instance = yield* Deferred.make<Instance>()
+  const context = Deferred.await(instance).pipe(Effect.flatMap((auth) => attempt("context", () => auth.$context)))
 
   const githubMember = Effect.fn("Auth.githubMember")(
     function* (token: string, org: string) {
@@ -382,7 +380,7 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
   const allowed = (userId: string) =>
     Cache.get(answers, userId).pipe(Effect.catchTag("AuthError", (error) => Effect.logError("couldn't check who's allowed in", error).pipe(Effect.as(false))))
   const auth = create({ config, db, samlMetadata, allowed: (userId) => runPromise(allowed(userId)), log })
-  instance = auth
+  yield* Deferred.succeed(instance, auth)
 
   const user = Effect.fn("Auth.user")(
     function* (headers: Headers) {
@@ -419,7 +417,8 @@ export const layer = (config: AppConfig) =>
           try: () => new Bun.SQL(Redacted.value(config.databaseUrl), { max: 4 }),
           catch: (cause) => new AuthError({ operation: "database", cause }),
         }),
-        (c) => Effect.promise(() => c.close({ timeout: 5 })),
+        (c) =>
+          Effect.tryPromise(() => c.close({ timeout: 5 })).pipe(Effect.catch((error) => Effect.logWarning("couldn't close the sign-in database pool", error))),
       )
       return yield* make(config, drizzle({ client }))
     }),

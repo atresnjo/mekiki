@@ -1,11 +1,12 @@
 import { afterAll, expect, test } from "bun:test"
 import { createHmac } from "node:crypto"
 import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, PubSub } from "effect"
 import { HttpRouter } from "effect/http"
-import type { PrRef } from "../src/domain.ts"
+import type { PrRef, Review } from "../src/domain.ts"
 import * as Http from "../src/http.ts"
 import { render } from "../src/panel.ts"
+import { Reviewer } from "../src/reviewer.ts"
 import { Store } from "../src/store.ts"
 import { Triggers } from "../src/triggers.ts"
 import { type Calls, configFrom, fakeCheckout, fakeGitHub, fakePanel, fakeReviewer, memoryStore } from "./support.ts"
@@ -189,5 +190,49 @@ test("in auto mode a stranger's pull request gets the checkboxes; a collaborator
   const own = await send(pullRequest("opened"))
   expect(own.status).toBe(202)
   expect(autoCalls.started.length).toBe(1)
+  await web.dispose()
+})
+
+test("a delivery glance failed handling is let go, so its redelivery is acted on; a malformed one isn't", async () => {
+  // the first review start finds the database down, the next one works
+  let outages = 1
+  const flaky = Layer.effect(
+    Reviewer.Service,
+    Effect.gen(function* () {
+      const changes = yield* PubSub.unbounded<Review>()
+      return Reviewer.Service.of({
+        start: () => (outages-- > 0 ? Effect.fail(new Store.StoreError({ operation: "create", message: "database down" })) : Effect.void),
+        run: () => Effect.die("not in tests"),
+        cancel: () => Effect.void,
+        subscribe: PubSub.subscribe(changes),
+      })
+    }),
+  )
+  const web = HttpRouter.toWebHandler(
+    Http.routes(config).pipe(
+      Layer.provide(Layer.mergeAll(memoryStore(config), flaky, fakePanel([]), fakeCheckout, Triggers.layer(config.triggers)).pipe(Layer.provideMerge(github))),
+      Layer.provide(BunServices.layer),
+    ),
+    { disableLogger: true },
+  )
+  const send = (payload: unknown, delivery: string) => {
+    const body = JSON.stringify(payload)
+    return web.handler(
+      new Request("http://glance/api/webhooks/github", {
+        method: "POST",
+        body,
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": delivery,
+          "x-hub-signature-256": `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`,
+        },
+      }),
+    )
+  }
+  const labeled = pullRequest("labeled", { label: { name: "glance:high" } })
+  expect((await send(labeled, "outage")).status).toBe(500)
+  expect((await send(labeled, "outage")).status).toBe(202)
+  expect((await send({ action: "opened" }, "malformed")).status).toBe(400)
+  expect(await (await send({ action: "opened" }, "malformed")).json()).toEqual({ ok: true, duplicate: true })
   await web.dispose()
 })

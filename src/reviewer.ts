@@ -1,7 +1,7 @@
 // the review pipeline. everything that can overlap does: the pull request, its diff and the last
 // review are fetched together, every chunk goes to its own agent process at once, and filtering is
 // plain code. a review is: ~3 github calls, one agent call per chunk, one github call to post
-import { Clock, Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSub, Schema, type Scope, Semaphore } from "effect"
+import { Clock, Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSub, Ref, Result, Schema, type Scope, Semaphore } from "effect"
 import { Agent } from "./agent.ts"
 import { Checkout } from "./checkout.ts"
 import * as Diff from "./diff.ts"
@@ -153,8 +153,8 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
   // stopping: the reviews about to be interrupted stay "running", and the next start takes them up.
   // added after the fiber map, so it runs before the map interrupts them
-  let stopping = false
-  yield* Effect.addFinalizer(() => Effect.sync(() => (stopping = true)))
+  const stopping = yield* Ref.make(false)
+  yield* Effect.addFinalizer(() => Ref.set(stopping, true))
 
   const save = (id: number, patch: Partial<Omit<Review, "id">>) => store.update(id, patch).pipe(Effect.tap((r) => PubSub.publish(changes, r)))
 
@@ -231,9 +231,9 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
 
     // what's left of the download once the diff is ready: usually nothing
     const checkedOut = yield* timed("code", Fiber.join(code))
-    const dir = checkedOut._tag === "Success" ? checkedOut.success : undefined
+    const dir = Result.isSuccess(checkedOut) ? checkedOut.success : undefined
     // without the code the review still runs, on the diff alone, and says so
-    const codeProblem = checkedOut._tag === "Failure" ? `reviewed the diff only: ${checkedOut.failure.message}` : undefined
+    const codeProblem = Result.isFailure(checkedOut) ? `reviewed the diff only: ${checkedOut.failure.message}` : undefined
 
     const results = yield* Effect.forEach(
       chunks,
@@ -254,10 +254,10 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       { concurrency: "unbounded" },
     )
 
-    const failures = results.flatMap((r) => (r._tag === "Failure" ? [r.failure.message] : []))
-    const reviews = results.flatMap((r) => (r._tag === "Success" ? [r.success] : []))
+    const failures = results.flatMap((r) => (Result.isFailure(r) ? [r.failure.message] : []))
+    const reviews = results.flatMap((r) => (Result.isSuccess(r) ? [r.success] : []))
     // a failed chunk's files weren't looked at: the review is partial, and says which
-    const unreviewed = results.flatMap((r, i) => (r._tag === "Failure" ? (chunks[i] ?? []).map((f) => f.path) : []))
+    const unreviewed = results.flatMap((r, i) => (Result.isFailure(r) ? (chunks[i] ?? []).map((f) => f.path) : []))
     if (reviews.length === 0) return yield* new Failed({ message: failures[0] ?? "the agent returned nothing" })
 
     const findings = triage(
@@ -359,12 +359,11 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       ),
       // cancelled, or replaced by a newer review: the comment on github says so instead of "reviewing…"
       Effect.onInterrupt(() =>
-        stopping
-          ? Effect.void
-          : finish({ status: "cancelled" }).pipe(
-              Effect.flatMap((review) => (shown ? panel.show(ref, { kind: "finished", review }) : Effect.void)),
-              Effect.catchTag("StoreError", (error) => Effect.logError("couldn't persist review cancellation", error)),
-            ),
+        finish({ status: "cancelled" }).pipe(
+          Effect.flatMap((review) => (shown ? panel.show(ref, { kind: "finished", review }) : Effect.void)),
+          Effect.catchTag("StoreError", (error) => Effect.logError("couldn't persist review cancellation", error)),
+          Effect.when(Effect.map(Ref.get(stopping), (stopping) => !stopping)),
+        ),
       ),
       Effect.annotateLogs({ pr: prKey(ref) }),
     )

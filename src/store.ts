@@ -62,7 +62,7 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
       .values({ repo: review.repo, number: review.number, status: review.status, data: review })
       .returning({ id: reviews.id })
       .pipe(query("create"))
-    if (!row) return yield* Effect.fail(new StoreError({ operation: "create", message: "insert returned no row" }))
+    if (!row) return yield* new StoreError({ operation: "create", message: "insert returned no row" })
     return { ...review, id: row.id }
   })
 
@@ -75,7 +75,7 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
       .where(eq(reviews.id, id))
       .returning()
       .pipe(query("update"))
-    if (!row) return yield* Effect.fail(new StoreError({ operation: "update", message: `no review ${id}` }))
+    if (!row) return yield* new StoreError({ operation: "update", message: `no review ${id}` })
     return yield* toReview(row)
   })
 
@@ -111,7 +111,11 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
     )
   })
 
-  const interrupted = db.select().from(reviews).where(eq(reviews.status, "running")).pipe(query("interrupted"), Effect.flatMap(toReviews))
+  const interrupted = db
+    .select()
+    .from(reviews)
+    .where(eq(reviews.status, "running"))
+    .pipe(query("interrupted"), Effect.flatMap(toReviews), Effect.withSpan("Store.interrupted"))
 
   const settings = Effect.gen(function* () {
     const [row] = yield* db.select().from(settingsTable).where(eq(settingsTable.id, 1)).pipe(query("settings"))
@@ -121,7 +125,7 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
       Effect.catch(() => decodeSettings({ ...options.defaults, ...row.data })),
       Effect.orElseSucceed(() => options.defaults),
     )
-  })
+  }).pipe(Effect.withSpan("Store.settings"))
 
   const saveSettings = Effect.fn("Store.saveSettings")(function* (next: Settings) {
     yield* db
@@ -163,7 +167,7 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
     yield* db.delete(deliveries).where(eq(deliveries.id, id)).pipe(query("releaseDelivery"))
   })
 
-  const ping = db.execute(sql`select 1`).pipe(Effect.asVoid, query("ping"))
+  const ping = db.execute(sql`select 1`).pipe(Effect.asVoid, query("ping"), Effect.withSpan("Store.ping"))
 
   return Service.of({
     create,

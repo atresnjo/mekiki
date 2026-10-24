@@ -1,7 +1,7 @@
 // is glance able to review? the database answers and at least one agent cli is installed and
 // logged in. /api/health says so (docker's healthcheck and uptime monitors read it), and a
 // monitor logs an error the moment an agent stops working: a cli login expires quietly otherwise
-import { Context, Duration, Effect, Layer, Option, Schedule } from "effect"
+import { Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { Agent } from "./agent.ts"
 import type { AgentKind } from "./domain.ts"
@@ -54,21 +54,19 @@ export const make = Effect.gen(function* () {
   })
 
   // every few minutes, fresh: say when an agent stops working, and when it's back
-  let last: Agents | undefined
-  const monitor = lookUp.pipe(
-    Effect.tap((now) =>
-      Effect.forEach(KINDS, (kind) => {
-        const was = last?.[kind]
-        if (now[kind] === null && (last === undefined || was !== null))
-          return Effect.logError(`${kind} isn't installed or logged in: reviews with it fail until it is`)
-        if (now[kind] !== null && last !== undefined && was === null) return Effect.logInfo(`${kind} works again (${now[kind]})`)
-        if (now[kind] !== null && last === undefined) return Effect.logInfo(`${kind}: ${now[kind]}`)
-        return Effect.void
-      }),
-    ),
-    Effect.tap((now) => Effect.sync(() => (last = now))),
-    Effect.repeat(Schedule.spaced(Duration.minutes(5))),
-  )
+  const previous = yield* Ref.make<Agents | undefined>(undefined)
+  const monitor = Effect.gen(function* () {
+    const now = yield* lookUp
+    const last = yield* Ref.getAndSet(previous, now)
+    yield* Effect.forEach(KINDS, (kind) => {
+      const was = last?.[kind]
+      if (now[kind] === null && (last === undefined || was !== null))
+        return Effect.logError(`${kind} isn't installed or logged in: reviews with it fail until it is`)
+      if (now[kind] !== null && last !== undefined && was === null) return Effect.logInfo(`${kind} works again (${now[kind]})`)
+      if (now[kind] !== null && last === undefined) return Effect.logInfo(`${kind}: ${now[kind]}`)
+      return Effect.void
+    })
+  }).pipe(Effect.repeat(Schedule.spaced(Duration.minutes(5))))
   yield* Effect.forkScoped(monitor)
 
   return Service.of({ agents, report })
