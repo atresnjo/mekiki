@@ -143,15 +143,15 @@ export const make = Effect.fn("Agent.make")(function* (options: Options) {
     return stdout
   })
 
-  const inTempDir = <A, E, R>(f: (dir: string) => Effect.Effect<A, E, R>) =>
+  const inTempDir = <A, E, R>(agent: AgentKind, f: (dir: string) => Effect.Effect<A, E, R>) =>
     fs.makeTempDirectoryScoped({ prefix: "glance-" }).pipe(
-      Effect.mapError((e) => new AgentError({ agent: "claude", message: `couldn't make a work directory: ${e.message}` })),
+      Effect.mapError((e) => new AgentError({ agent, message: `couldn't make a work directory: ${e.message}` })),
       Effect.flatMap(f),
       Effect.scoped,
     )
 
   const claude = (request: Request) =>
-    inTempDir((dir) =>
+    inTempDir(request.agent, (dir) =>
       Effect.gen(function* () {
         const stdout = yield* run(
           "claude",
@@ -185,7 +185,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options) {
     )
 
   const codex = (request: Request) =>
-    inTempDir((dir) =>
+    inTempDir(request.agent, (dir) =>
       Effect.gen(function* () {
         const schemaPath = `${dir}/schema.json`
         const outputPath = `${dir}/out.json`

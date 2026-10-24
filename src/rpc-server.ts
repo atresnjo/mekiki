@@ -21,10 +21,10 @@ const prOf = (review: Review) => {
   return { owner, repo, number: review.number }
 }
 
-/** refusals (not found, invalid) go out as they are; a defect is glance's bug: logged, and sent as Failed without its details */
+/** Expected refusals stay typed; infrastructure failures and defects are logged and sanitized. */
 const failed = (defect: unknown) =>
   Effect.logError("rpc failed", defect).pipe(Effect.andThen(Effect.fail(new Failed({ message: "glance failed: the details are in its log" }))))
-const api = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.catchDefect(effect, failed)
+const api = <A, E, R>(effect: Effect.Effect<A, E | Store.StoreError, R>) => effect.pipe(Effect.catchTag("StoreError", failed), Effect.catchDefect(failed))
 
 export const AuthenticatedLive = Layer.effect(
   Authenticated,
@@ -80,7 +80,10 @@ export const HandlersLive = (config: AppConfig) =>
                 Stream.merge(heartbeats),
               )
             }),
-          ).pipe(Stream.catchDefect((defect) => Stream.fromEffect(failed(defect)))),
+          ).pipe(
+            Stream.catchTag("StoreError", (error) => Stream.fromEffect(failed(error))),
+            Stream.catchDefect((defect) => Stream.fromEffect(failed(defect))),
+          ),
 
         ListReviews: ({ before }) => store.listBefore(before, PAGE).pipe(api),
 

@@ -8,7 +8,7 @@
 //
 // bounded: a download gives up after `timeout`, git may write no more than `maxMegabytes` (the
 // tarball may download no more), and everything here together stays under `diskBudgetMegabytes`
-import { Cache, Context, Duration, Effect, Exit, FileSystem, Layer, Option, Redacted, Ref, Schedule, Schema, Semaphore, Stream } from "effect"
+import { Cache, Context, Duration, Effect, Exit, FileSystem, Layer, Option, Queue, Redacted, Ref, Schedule, Schema, Semaphore, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { PrRef } from "./domain.ts"
 import { childEnv } from "./agent.ts"
@@ -243,7 +243,16 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
       yield* Effect.logInfo(`the checkouts are over GLANCE_DISK_BUDGET_MB: removed ${victim.path}`)
     }
     if (used > budget) yield* Effect.logWarning(`the checkouts use ${Math.round(used / 1024)} MB, over GLANCE_DISK_BUDGET_MB, with nothing left to remove`)
-  }).pipe(Effect.ignore)
+  }).pipe(Effect.catch((error) => Effect.logWarning("couldn't prune checkouts", error)))
+
+  // Coalesce prune requests into one pending pass. The worker stops before its filesystem and
+  // process services close, and concurrent downloads never launch competing pruning passes.
+  const pruneRequests = yield* Queue.sliding<void>(1)
+  yield* Effect.addFinalizer(() => Queue.shutdown(pruneRequests))
+  yield* Stream.fromQueue(pruneRequests).pipe(
+    Stream.runForEach(() => prune),
+    Effect.forkScoped,
+  )
 
   const fetch = (key: Key): Effect.Effect<string, CheckoutError> =>
     Effect.gen(function* () {
@@ -269,21 +278,22 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
         ),
       )
       yield* fs.rename(tmp, dir).pipe(
-        // another review of the same commit got there first
-        Effect.catch(() => fs.remove(tmp, { recursive: true }).pipe(Effect.ignore)),
+        Effect.mapError((error) => fail(`couldn't publish the checkout: ${error.message}`)),
+        Effect.onExit(() => fs.remove(tmp, { recursive: true }).pipe(Effect.ignore)),
       )
-      yield* Effect.forkDetach(prune)
+      yield* Queue.offer(pruneRequests, undefined)
       return dir
     }).pipe(Effect.withSpan("Checkout.fetch", { attributes: { repo: `${key.pr.owner}/${key.pr.repo}`, sha: key.sha } }))
 
   // reviews of the same commit at the same moment share one download. the key is a string:
-  // the cache compares keys by value, and two equal objects aren't
+  // the cache compares keys by value, and two equal objects aren't. Completed lookups expire
+  // immediately: the filesystem is authoritative, since pruning can remove a checkout at any time
   const inFlight = yield* Cache.makeWith(
     (key: string) => {
       const [owner = "", repo = "", sha = ""] = key.split("/")
       return fetch({ pr: { owner, repo, number: 0 }, sha })
     },
-    { capacity: 64, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.seconds(30) : Duration.zero) },
+    { capacity: 64, timeToLive: () => Duration.zero },
   )
 
   const at = (pr: PrRef, sha: string) => Cache.get(inFlight, `${pr.owner}/${pr.repo}/${sha}`)

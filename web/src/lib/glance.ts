@@ -112,7 +112,7 @@ export const olderAtom = Atom.make<Older>({ reviews: [], done: false }).pipe(Ato
 
 /** the next page, before the oldest review loaded so far */
 export const loadOlder = Glance.runtime.fn(
-  Effect.fnUntraced(function* (before: number, get: Atom.FnContext) {
+  Effect.fn("Glance.loadOlder")(function* (before: number, get: Atom.FnContext) {
     const client = yield* Glance
     const page = yield* client("ListReviews", { before })
     const older = get(olderAtom)

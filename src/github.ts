@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto"
+import { createPrivateKey, createSign } from "node:crypto"
 import { Cache, Context, Duration, Effect, Exit, FileSystem, flow, Layer, Option, Redacted, Schedule, Schema, Stream } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -132,12 +132,23 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const tokenFor: (pr: PrRef) => Effect.Effect<string, GitHubError> = yield* Option.isSome(appId) && Option.isSome(privateKey)
     ? Effect.gen(function* () {
+        // Parse operator-supplied key material in the typed channel during layer acquisition.
+        yield* Effect.try({
+          try: () => createPrivateKey(privateKey.value),
+          catch: (cause) =>
+            new GitHubError({ operation: "auth", message: `invalid GitHub App private key: ${cause instanceof Error ? cause.message : String(cause)}` }),
+        })
         const asApp = (request: HttpClientRequest.HttpClientRequest) =>
-          HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, Date.now())).pipe(HttpClientRequest.acceptJson)
+          Effect.try({
+            try: () => HttpClientRequest.bearerToken(request, appJwt(appId.value, privateKey.value, Date.now())).pipe(HttpClientRequest.acceptJson),
+            catch: (cause) =>
+              new GitHubError({ operation: "auth", message: `couldn't sign GitHub App token: ${cause instanceof Error ? cause.message : String(cause)}` }),
+          })
         // which installation reaches a repository changes rarely: an hour
         const installations = yield* Cache.makeWith(
           (repo: string) =>
-            execute(reader, "installation", asApp(HttpClientRequest.get(`/repos/${repo}/installation`))).pipe(
+            asApp(HttpClientRequest.get(`/repos/${repo}/installation`)).pipe(
+              Effect.flatMap((request) => execute(reader, "installation", request)),
               Effect.flatMap((r) => json("installation", r, decodeInstallation)),
               Effect.map((i) => i.id),
             ),
@@ -146,7 +157,8 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
         // an installation token lasts an hour: kept until five minutes before it runs out
         const tokens = yield* Cache.makeWith(
           (installation: number) =>
-            execute(base, "accessToken", asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`))).pipe(
+            asApp(HttpClientRequest.post(`/app/installations/${installation}/access_tokens`)).pipe(
+              Effect.flatMap((request) => execute(base, "accessToken", request)),
               Effect.flatMap((r) => json("accessToken", r, decodeAccessToken)),
             ),
           {

@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 export const AgentKind = Schema.Literals(["claude", "codex"])
 export type AgentKind = typeof AgentKind.Type
@@ -13,7 +13,7 @@ export const EFFORT: Record<Depth, "low" | "medium" | "high"> = { light: "low", 
 /** a depth named in a label or comment: `glance:high`, `glance-light`, `/glance medium` */
 export const depthIn = (text: string): Depth | undefined => {
   const m = text.match(/(?:^|[\s/@])glance(?:[:/ -]|\s+)(light|medium|high)\b/i)
-  return m?.[1] ? (m[1].toLowerCase() as Depth) : undefined
+  return m?.[1] ? Option.getOrUndefined(Schema.decodeUnknownOption(Depth)(m[1].toLowerCase())) : undefined
 }
 
 export const Severity = Schema.Literals(["critical", "high", "medium", "low"])

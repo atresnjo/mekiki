@@ -13,6 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "test": "bun test",
+    "test:e2e": "bun test test/effect.e2e.test.ts",
+    "test:e2e:postgres": "bun test/effect-postgres.e2e.ts",
     "lint": "oxlint",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check"

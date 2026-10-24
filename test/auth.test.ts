@@ -4,7 +4,8 @@ import { PGlite } from "@electric-sql/pglite"
 import { BunServices } from "@effect/platform-bun"
 import { drizzle } from "drizzle-orm/pglite"
 import { migrate } from "drizzle-orm/pglite/migrator"
-import { Effect, Option } from "effect"
+import { Effect, Layer, Option } from "effect"
+import { FetchHttpClient } from "effect/http"
 import { allowedByEmail, Auth, emailListed, LOCAL, problems, SSO_ID } from "../src/auth.ts"
 import { Database } from "../src/database.ts"
 import { authAccounts, authSessions, users } from "../src/schema.ts"
@@ -66,7 +67,7 @@ const withAuth = <A>(env: Record<string, string>, f: (auth: Auth.Interface, db: 
       yield* Effect.promise(() => migrate(db, { migrationsFolder: Database.MIGRATIONS }))
       const auth = yield* Auth.make(configFrom(env), db)
       return yield* Effect.promise(() => f(auth, db))
-    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))),
   )
 
 /** someone who signed in with `provider`: their user, account and the session cookie a browser would hold */
@@ -118,7 +119,7 @@ test("without sign-in set up, development is open: everyone is the local user", 
     Effect.gen(function* () {
       const auth = yield* Auth.make(configFrom({}), drizzle({ client: new PGlite() }))
       return yield* auth.user(new Headers())
-    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))),
   )
   expect(user).toEqual(Option.some(LOCAL))
 })

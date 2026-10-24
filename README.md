@@ -44,6 +44,8 @@ On your own machine nobody needs to sign in. To try signing in, set `BETTER_AUTH
 
 The server brings the database up to date when it starts: the migrations in `drizzle/` it hasn't applied yet run first. After changing `src/schema.ts`, `bun db:generate` writes the next one. The tests run on an in-process Postgres (PGlite) and need no database.
 
+`bun run test:e2e` rehearses the review pipeline using a local HTTP fixture and real agent subprocesses; `bun run test:e2e:postgres` also verifies the production database and sign-in adapters in a temporary Docker container. They write repeatable reports under `.data/`. [Effect conventions and verification](docs/effect.md) describes service boundaries, typed failures, and resource ownership.
+
 The server is the api only (Effect RPC at `/api/rpc`, http + ndjson, and the webhook); it doesn't serve the dashboard. `web/` is a plain Vite + TanStack Router app: `bun dev:web` runs it alone, `bun run build` writes `web/dist` for any static host. The dashboard calls the api on its own origin: Vite forwards `/api/` to it (`GLANCE_API_URL`, default `http://127.0.0.1:7420`); in production a reverse proxy does the same.
 
 ## Deploy on a VPS

@@ -5,13 +5,13 @@
 //
 // production refuses to start until signing in is set up: see `problems`
 import { sso } from "@better-auth/sso"
-import { betterAuth } from "better-auth"
+import { betterAuth, type BetterAuthOptions } from "better-auth"
 import { drizzleAdapter } from "better-auth/adapters/drizzle"
 import { decryptOAuthToken } from "better-auth/oauth2"
 import type { PgAsyncDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core"
 import { drizzle } from "drizzle-orm/bun-sql"
-import { Context, Effect, FiberSet, FileSystem, Layer, Option, Redacted, Schema } from "effect"
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Cache, Context, Duration, Effect, Exit, FiberSet, FileSystem, Layer, Option, Redacted, Schema } from "effect"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { AppConfig } from "./config.ts"
 import { Database } from "./database.ts"
 import { authAccounts, authSessions, authVerifications, ssoProviders, users } from "./schema.ts"
@@ -132,7 +132,7 @@ export const allowedByEmail = (auth: AppConfig["auth"], who: Identity) => {
 // ---------- better auth ----------
 
 /** a drizzle postgres database whose queries are promises, as better auth's adapter wants */
-export type AuthDatabase = PgAsyncDatabase<PgQueryResultHKT, any>
+export type AuthDatabase = PgAsyncDatabase<PgQueryResultHKT>
 
 const create = (input: {
   readonly config: AppConfig
@@ -153,7 +153,7 @@ const create = (input: {
   // the idp is fetched from the server (discovery, the token exchange): better auth only goes where it's told it may
   const idpOrigins = oidc ? [...new Set([new URL(issuer).origin, new URL(discovery).origin])] : []
 
-  return betterAuth({
+  const options: BetterAuthOptions = {
     appName: "glance",
     baseURL: base,
     basePath: "/api/auth",
@@ -252,7 +252,8 @@ const create = (input: {
     onAPIError: { errorURL: `${base}/` },
     telemetry: { enabled: false },
     logger: { log: (level, message) => input.log(level, message) },
-  })
+  }
+  return betterAuth(options)
 }
 
 export type Instance = ReturnType<typeof create>
@@ -279,16 +280,7 @@ export const LOCAL: User = { id: "local", name: "local", email: "", image: null 
 /** the headers of an effect request, as the web Headers better auth reads */
 export const webHeaders = (headers: { readonly [name: string]: string }) => new Headers(Object.entries(headers))
 
-const githubMember = async (token: string, org: string) => {
-  const response = await fetch(`https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`, {
-    headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "glance" },
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (response.status === 404 || response.status === 403) return false
-  if (!response.ok) throw new Error(`github answered ${response.status} about ${org}`)
-  const body = (await response.json()) as { state?: string }
-  return body.state === "active"
-}
+const Membership = Schema.Struct({ state: Schema.String })
 
 export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: AuthDatabase) {
   const fs = yield* FileSystem.FileSystem
@@ -308,10 +300,9 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
 
   const samlMetadata =
     m.sso?.kind === "saml"
-      ? yield* fs.readFileString(Option.getOrThrow(config.auth.sso.samlMetadataFile)).pipe(
-          Effect.mapError((cause) => new AuthError({ operation: "readSamlMetadata", cause })),
-          Effect.orDie,
-        )
+      ? yield* fs
+          .readFileString(Option.getOrThrow(config.auth.sso.samlMetadataFile))
+          .pipe(Effect.mapError((cause) => new AuthError({ operation: "readSamlMetadata", cause })))
       : undefined
 
   // better auth logs and hooks through callbacks: each runs here, and stops with this layer
@@ -323,67 +314,95 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
       ),
     )
 
-  // "may they in", per user, for a minute; organization memberships for ten
-  const answers = new Map<string, { readonly allowed: boolean; readonly at: number }>()
-  const memberships = new Map<string, { readonly member: boolean; readonly at: number }>()
+  // Better Auth owns the Promise callbacks; their effects belong to this layer's scope.
+  const runPromise = yield* FiberSet.makeRuntimePromise()
+  const http = yield* HttpClient.HttpClient
+  const attempt = <A>(operation: string, evaluate: () => PromiseLike<A>) =>
+    Effect.tryPromise({ try: evaluate, catch: (cause) => new AuthError({ operation, cause }) }).pipe(Effect.withSpan(`Auth.${operation}`))
   let instance: Instance | undefined
+  const context = Effect.suspend(() => {
+    const auth = instance
+    return auth ? attempt("context", () => auth.$context) : Effect.fail(new AuthError({ operation: "context", cause: "auth is not initialized" }))
+  })
 
-  const inAnOrg = async (userId: string): Promise<boolean> => {
-    if (!instance || config.auth.allowedGithubOrgs.length === 0) return false
-    const cached = memberships.get(userId)
-    if (cached && Date.now() - cached.at < MEMBERSHIP_TTL) return cached.member
-    const ctx = await instance.$context
-    const account = (await ctx.internalAdapter.findAccounts(userId)).find((a) => a.providerId === "github")
-    if (!account?.accessToken) return false
-    try {
-      // better auth's own context: its type is narrower than the one the helper names
-      const token = await decryptOAuthToken(account.accessToken, ctx as unknown as Parameters<typeof decryptOAuthToken>[1])
-      let member = false
-      for (const org of config.auth.allowedGithubOrgs) if ((member = await githubMember(token, org))) break
-      memberships.set(userId, { member, at: Date.now() })
-      return member
-    } catch (error) {
-      // github didn't answer: what it said last stands, for a while
-      log("warn", `couldn't ask github about ${userId}'s organizations: ${String(error)}`)
-      return cached?.member ?? false
-    }
-  }
+  const githubMember = Effect.fn("Auth.githubMember")(
+    function* (token: string, org: string) {
+      const response = yield* http.execute(
+        HttpClientRequest.get(`https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`).pipe(
+          HttpClientRequest.bearerToken(token),
+          HttpClientRequest.setHeaders({ accept: "application/vnd.github+json", "user-agent": "glance" }),
+        ),
+      )
+      if (response.status === 404 || response.status === 403) return false
+      const ok = yield* HttpClientResponse.filterStatusOk(response)
+      const body = yield* HttpClientResponse.schemaBodyJson(Membership)(ok)
+      return body.state === "active"
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.timeout("10 seconds"),
+        Effect.mapError((cause) => new AuthError({ operation: "githubMembership", cause })),
+      ),
+  )
 
-  const allowed = async (userId: string): Promise<boolean> => {
-    const cached = answers.get(userId)
-    if (cached && Date.now() - cached.at < ALLOWED_TTL) return cached.allowed
-    if (!instance) return false
-    const ctx = await instance.$context
-    const [user, accounts] = await Promise.all([ctx.internalAdapter.findUserById(userId), ctx.internalAdapter.findAccounts(userId)])
-    if (!user) return false
-    const providers = accounts.map((a) => a.providerId)
-    const yes =
-      allowedByEmail(config.auth, { email: user.email, emailVerified: user.emailVerified, providers }) ||
-      (providers.includes("github") && (await inAnOrg(userId)))
-    if (!yes) log("warn", `${user.email} signed in and isn't allowed in`)
-    answers.set(userId, { allowed: yes, at: Date.now() })
-    return yes
-  }
+  // Bounded caches deduplicate concurrent checks and never retain failed lookups.
+  const memberships = yield* Cache.makeWith(
+    Effect.fn("Auth.membership")(function* (userId: string) {
+      if (config.auth.allowedGithubOrgs.length === 0) return false
+      const ctx = yield* context
+      const accounts = yield* attempt("findAccounts", () => ctx.internalAdapter.findAccounts(userId))
+      const account = accounts.find((account) => account.providerId === "github")
+      if (!account?.accessToken) return false
+      const encrypted = account.accessToken
+      const token = yield* attempt("decryptToken", async () => decryptOAuthToken(encrypted, ctx))
+      for (const org of config.auth.allowedGithubOrgs) if (yield* githubMember(token, org)) return true
+      return false
+    }),
+    { capacity: 4096, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.millis(MEMBERSHIP_TTL) : Duration.zero) },
+  )
 
-  instance = create({ config, db, samlMetadata, allowed, log })
-  const auth = instance
+  const answers = yield* Cache.makeWith(
+    Effect.fn("Auth.allowed")(function* (userId: string) {
+      const ctx = yield* context
+      const [user, accounts] = yield* Effect.all(
+        [attempt("findUser", () => ctx.internalAdapter.findUserById(userId)), attempt("findAccounts", () => ctx.internalAdapter.findAccounts(userId))],
+        { concurrency: "unbounded" },
+      )
+      if (!user) return false
+      const providers = accounts.map((account) => account.providerId)
+      const yes =
+        allowedByEmail(config.auth, { email: user.email, emailVerified: user.emailVerified, providers }) ||
+        (providers.includes("github") && (yield* Cache.get(memberships, userId)))
+      if (!yes) yield* Effect.logWarning(`${user.email} signed in and isn't allowed in`)
+      return yes
+    }),
+    { capacity: 4096, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.millis(ALLOWED_TTL) : Duration.zero) },
+  )
 
-  const call = <A>(operation: string, f: (auth: Instance) => Promise<A>) =>
-    Effect.tryPromise({ try: () => f(auth), catch: (cause) => new AuthError({ operation, cause }) }).pipe(Effect.withSpan(`Auth.${operation}`))
+  const allowed = (userId: string) =>
+    Cache.get(answers, userId).pipe(Effect.catchTag("AuthError", (error) => Effect.logError("couldn't check who's allowed in", error).pipe(Effect.as(false))))
+  const auth = create({ config, db, samlMetadata, allowed: (userId) => runPromise(allowed(userId)), log })
+  instance = auth
 
-  const user = (headers: Headers) =>
-    call("getSession", async (a) => {
-      const found = await a.api.getSession({ headers })
-      if (!found || !(await allowed(found.user.id))) return Option.none<User>()
+  const user = Effect.fn("Auth.user")(
+    function* (headers: Headers) {
+      const found = yield* attempt("getSession", () => auth.api.getSession({ headers }))
+      if (!found || !(yield* allowed(found.user.id))) return Option.none<User>()
       const { id, name, email, image } = found.user
       return Option.some<User>({ id, name, email, image: image ?? null })
-    }).pipe(
-      // who's calling can't be checked (the database failed): refused, never let through
-      Effect.catch((e) => Effect.logError("couldn't check who's calling", e).pipe(Effect.as(Option.none<User>()))),
-    )
+    },
+    (effect) =>
+      effect.pipe(Effect.catchTag("AuthError", (error) => Effect.logError("couldn't check who's calling", error).pipe(Effect.as(Option.none<User>())))),
+  )
 
   yield* Effect.logInfo(`signing in with ${[m.github ? "github" : "", m.sso ? `${m.sso.name} (${m.sso.kind})` : ""].filter(Boolean).join(" and ")}`)
-  return Service.of({ enabled: true, methods: m, handler: (request) => call("handler", (a) => a.handler(request)), user, instance: auth })
+  return Service.of({
+    enabled: true,
+    methods: m,
+    handler: Effect.fn("Auth.handler")((request: Request) => attempt("handler", () => auth.handler(request))),
+    user,
+    instance: auth,
+  })
 })
 
 /**
@@ -396,12 +415,15 @@ export const layer = (config: AppConfig) =>
     Effect.gen(function* () {
       yield* Database.Service
       const client = yield* Effect.acquireRelease(
-        Effect.sync(() => new Bun.SQL(Redacted.value(config.databaseUrl), { max: 4 })),
+        Effect.try({
+          try: () => new Bun.SQL(Redacted.value(config.databaseUrl), { max: 4 }),
+          catch: (cause) => new AuthError({ operation: "database", cause }),
+        }),
         (c) => Effect.promise(() => c.close({ timeout: 5 })),
       )
       return yield* make(config, drizzle({ client }))
     }),
-  )
+  ).pipe(Layer.provide(FetchHttpClient.layer))
 
 // ---------- http: better auth's routes, and what the sign-in page offers ----------
 

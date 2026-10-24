@@ -31,10 +31,10 @@ export const make = Effect.gen(function* () {
   const store = yield* Store.Service
 
   const lookUp = Effect.all(
-    Object.fromEntries(KINDS.map((kind) => [kind, agent.check(kind).pipe(Effect.option, Effect.map(Option.getOrNull))])) as Record<
-      AgentKind,
-      Effect.Effect<string | null>
-    >,
+    {
+      claude: agent.check("claude").pipe(Effect.option, Effect.map(Option.getOrNull)),
+      codex: agent.check("codex").pipe(Effect.option, Effect.map(Option.getOrNull)),
+    },
     { concurrency: "unbounded" },
   )
   const agents = yield* Effect.cachedWithTTL(lookUp, Duration.minutes(1))
