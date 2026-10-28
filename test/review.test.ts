@@ -3,7 +3,7 @@ import { agentEnv, childEnv } from "../src/agent.ts"
 import { chunk, commentable, excludedBy, parseDiff, render, restrictTo, select } from "../src/diff.ts"
 import { depthIn, effective, type Finding, parsePrUrl, repoSettings, type Settings, settingsProblem } from "../src/domain.ts"
 import { system, TEAM_RULES_MAX } from "../src/prompt.ts"
-import { anchor, reviewBody, triage } from "../src/reviewer.ts"
+import { anchor, reviewBody, suggestionBlock, triage } from "../src/reviewer.ts"
 import { configFrom, review } from "./support.ts"
 
 const DIFF = `diff --git a/src/auth.ts b/src/auth.ts
@@ -257,4 +257,11 @@ describe("the system prompt", () => {
     expect(long).toContain("y".repeat(TEAM_RULES_MAX))
     expect(long).not.toContain("y".repeat(TEAM_RULES_MAX + 1))
   })
+})
+
+test("a suggestion with backticks in it stays one suggestion block", () => {
+  expect(suggestionBlock("const x = 1")).toBe("```suggestion\nconst x = 1\n```")
+  // a markdown line that opens a code block: the fence is longer than it, so it can't close early
+  expect(suggestionBlock("```ts")).toBe("````suggestion\n```ts\n````")
+  expect(suggestionBlock("const s = `a` + ``b``")).toBe("```suggestion\nconst s = `a` + ``b``\n```")
 })

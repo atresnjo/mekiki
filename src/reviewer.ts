@@ -112,11 +112,17 @@ const FINDING = /<!-- glance:finding (\w+) (\S*) -->/
 /** hidden in glance's "fixed" reply: a thread it resolved once, and someone reopened, is left to them */
 const FIXED = "<!-- glance:fixed -->"
 
+/** a suggestion block that holds any text: its fence is longer than every run of backticks inside */
+export const suggestionBlock = (text: string) => {
+  const fence = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)))
+  return `${fence}suggestion\n${text}\n${fence}`
+}
+
 export const commentBody = (f: Finding, agent: { readonly kind: AgentKind; readonly model: string; readonly depth: Depth }) =>
   [
     `${ICON[f.severity]} **${f.title}**`,
     f.body,
-    f.suggestion === null ? "" : "```suggestion\n" + f.suggestion + "\n```",
+    f.suggestion === null ? "" : suggestionBlock(f.suggestion),
     `<sub>${f.severity} · ${f.category} · ${Math.round(f.confidence * 100)}% · glance/${agent.kind}${agent.model ? ` ${agent.model}` : ""} ${agent.depth}</sub>`,
     `<!-- glance:finding ${f.category} ${encodeURIComponent(f.title)} -->`,
   ]
