@@ -120,8 +120,15 @@ export const fakeHealth = Layer.succeed(
 const unchecked = { windows: [], checkedAt: 0, unavailable: "not checked in tests" }
 export const fakeUsage = Layer.succeed(Usage.Service, Usage.Service.of({ read: Effect.succeed({ claude: unchecked, codex: unchecked }) }))
 
-/** github, faked: `permissions` is who has what on every repository (everyone else: none) */
-export const fakeGitHub = (acknowledged: Array<number>, permissions: Record<string, Permission> = {}) =>
+/**
+ * github, faked: `permissions` is who has what on every repository (everyone else: none). no review
+ * threads; `resolved` records each thread resolved, with its reply
+ */
+export const fakeGitHub = (
+  acknowledged: Array<number>,
+  permissions: Record<string, Permission> = {},
+  resolved: Array<{ readonly id: string; readonly reply: string }> = [],
+) =>
   Layer.succeed(
     GitHub.Service,
     GitHub.Service.of({
@@ -135,6 +142,8 @@ export const fakeGitHub = (acknowledged: Array<number>, permissions: Record<stri
       updateComment: () => Effect.void,
       acknowledge: (_, id) => Effect.sync(() => void acknowledged.push(id)),
       permission: (_, login) => Effect.succeed(permissions[login] ?? "none"),
+      reviewThreads: () => Effect.succeed([]),
+      resolveThread: (_, id, reply) => Effect.sync(() => void resolved.push({ id, reply })),
     }),
   )
 

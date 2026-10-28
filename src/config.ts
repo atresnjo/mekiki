@@ -69,6 +69,8 @@ export const AppConfig = Config.all({
     webhookSecret: Config.option(Config.Redacted("GITHUB_WEBHOOK_SECRET")),
     /** bigger webhook deliveries are refused (github's own limit is 25 MB) */
     maxWebhookBytes: Config.Int("GITHUB_WEBHOOK_MAX_BYTES").pipe(Config.withDefault(5 * 1024 * 1024)),
+    /** after a review, resolve glance's own threads whose code changed and whose problem it didn't find again */
+    resolveFixed: Config.Boolean("GLANCE_RESOLVE_FIXED").pipe(Config.withDefault(true)),
   }),
   /** who may start a review from github (a comment, a ticked box, a label), and how often */
   triggers: Config.all({

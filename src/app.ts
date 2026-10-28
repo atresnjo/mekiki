@@ -18,7 +18,7 @@ export const layer = (config: AppConfig) => {
     Store.layer({ defaults: config.defaults }).pipe(Layer.provideMerge(Database.layer({ url: config.databaseUrl }))),
   )
   // the http routes use the store, the agents and the panel too, so they stay exposed
-  return Reviewer.layer(config.limits).pipe(
+  return Reviewer.layer(config.limits, { resolveFixed: config.github.resolveFixed }).pipe(
     Layer.provideMerge(Layer.mergeAll(Panel.layer, Checkout.layer(config.checkouts), Triggers.layer(config.triggers))),
     Layer.provideMerge(Adapters),
   )

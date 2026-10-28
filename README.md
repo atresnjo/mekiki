@@ -14,7 +14,7 @@ The agent gets the diff **and the repository**: every review downloads the code 
 - **Big chunks.** Files are packed first-fit-decreasing into 150k-character chunks, so most pull requests are a single call.
 - **Plain code for the rest.** Lockfiles, generated files and binaries are dropped before the model sees anything; comments are pinned to lines GitHub accepts, filtered by confidence, de-duplicated and capped without a second model call.
 - **Incremental follow-ups.** After the first review, a push is reviewed as `last-reviewed...head`, restricted to the pull request's files.
-- **One write.** All inline comments go out in a single GitHub review.
+- **One write.** All inline comments go out in a single GitHub review. Alongside it, one GraphQL read finds glance's threads whose problem is gone, decided by plain code, not another model call.
 
 Measured end to end, light depth: [miracodeai/mira#353](https://github.com/miracodeai/mira/pull/353) (2 files) with Claude Code in 7.4s, 2.7s of it waiting on the 5 MB download; the same commit at high in 11.1s with the code already on disk; [#349](https://github.com/miracodeai/mira/pull/349) (22 files) with Codex in 30.9s.
 
@@ -109,6 +109,8 @@ Drafts are skipped until they're ready for review. A new review of a pull reques
 
 **When part of a review fails** (an agent times out on one chunk, say), the review says so: "Partial review: 2 of 9 files couldn't be reviewed", the files listed, the panel reads "Partly reviewed", and the next review starts from before it, so those files get looked at.
 
+**When a problem is fixed, glance resolves its thread.** After each review it posts, a thread glance started is resolved, with a "✅ Fixed in abc1234" reply, once GitHub marks it outdated (the code under it changed) and the review didn't find the same problem again near there (same file, a nearby line, a similar title or the same kind of problem). A thread on code that hasn't changed stays open, threads glance didn't start are never touched, and one someone reopens after glance resolved it is left to them. `GLANCE_RESOLVE_FIXED=false` turns this off.
+
 Other ways to pick a depth: comment `/glance high` (glance reacts 👀), or label the pull request `glance:high` (`glance:light`, `glance:medium`) to pin it; adding the label starts a review too. The Light / Medium / High switch in the dashboard sets the default.
 
 ## Subscription auth
@@ -140,7 +142,7 @@ src/
   panel.ts      glance's comment on a pull request, and its depth checkboxes
   checkout.ts   the repository at the head commit: incremental git fetch (tarball fallback), cached per commit
   agent.ts      claude -p / codex exec drivers
-  github.ts     REST client (Effect HttpClient)
+  github.ts     REST and GraphQL client (Effect HttpClient)
   diff.ts       diff parsing, file selection, chunking, line anchoring (pure)
   prompt.ts     system and review prompts
   store.ts      reviews, settings, comments, deliveries: drizzle queries
