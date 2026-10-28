@@ -21,7 +21,7 @@ import { Reviewer } from "../src/reviewer.ts"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
 import { GlanceRpcs } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
-import { configFrom, fakeAuth, fakeHealth, memoryDatabase } from "./support.ts"
+import { configFrom, fakeAuth, fakeHealth, fakeUsage, memoryDatabase } from "./support.ts"
 
 test("Effect end-to-end rehearsal: real HTTP, agent processes, checkout, persistence and RPC", async () => {
   const dir = mkdtempSync(join(tmpdir(), "glance-effect-e2e-"))
@@ -135,7 +135,7 @@ console.log(JSON.stringify({ structured_output: { summary: "Read the actual code
         const typed = failure._tag === "Failure" ? Cause.findErrorOption(failure.cause) : Option.none()
         expect(Option.isSome(typed) && Schema.is(Schema.Struct({ _tag: Schema.Literal("StoreError") }))(typed.value)).toBe(true)
         const client = yield* RpcTest.makeClient(GlanceRpcs).pipe(
-          Effect.provide(Layer.mergeAll(HandlersLive(config), AuthenticatedLive).pipe(Layer.provide(Layer.mergeAll(fakeAuth(false), fakeHealth)))),
+          Effect.provide(Layer.mergeAll(HandlersLive(config), AuthenticatedLive).pipe(Layer.provide(Layer.mergeAll(fakeAuth(false), fakeHealth, fakeUsage)))),
         )
         const rpcFailure = yield* client.ListReviews({ before: 100 }).pipe(Effect.flip)
         expect(rpcFailure._tag).toBe("Failed")

@@ -9,6 +9,7 @@ import { Link } from "@tanstack/react-router"
 import { useAtomSet } from "@effect/atom-react"
 import { loadOlder, type Review, useMoreToLoad } from "../lib/glance.ts"
 import { change, type Metric, metric, RANGES, type Range } from "../lib/metrics.ts"
+import { SubscriptionUsage } from "./usage.tsx"
 import { ReviewsTable } from "./table.tsx"
 import { agentName, ago, depthLabel, elapsed, median, report, seconds, StatusBadge, useDarkMode } from "./ui.tsx"
 
@@ -43,6 +44,7 @@ export const Overview = ({ reviews, now }: { reviews: ReadonlyArray<Review>; now
   return (
     <div className="flex flex-col gap-6">
       <LatestCard reviews={reviews} now={now} typical={median(finishedTimes)} />
+      <SubscriptionUsage />
 
       <div className="flex items-center justify-between gap-4">
         <Text variant="heading" as="h2">

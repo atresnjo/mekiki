@@ -17,6 +17,7 @@ services:
     environment:
       GLANCE_ENV: production
       BETTER_AUTH_URL: https://${GLANCE_DOMAIN:?set GLANCE_DOMAIN in .env}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
       HOST: 0.0.0.0
       PORT: "7420"
       DATABASE_URL: postgres://glance:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/glance

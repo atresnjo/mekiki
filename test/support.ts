@@ -15,6 +15,7 @@ import { Health } from "../src/health.ts"
 import { Panel } from "../src/panel.ts"
 import { Reviewer, type StartOptions } from "../src/reviewer.ts"
 import { Store } from "../src/store.ts"
+import { Usage } from "../src/usage.ts"
 
 export const configFrom = (env: Record<string, string>) =>
   Effect.runSync(
@@ -114,6 +115,10 @@ export const fakeHealth = Layer.succeed(
     report: Effect.succeed({ ok: true, database: "ok", agents: { claude: "claude 1.0", codex: null } }),
   }),
 )
+
+/** subscription usage, faked: never checked */
+const unchecked = { windows: [], checkedAt: 0, unavailable: "not checked in tests" }
+export const fakeUsage = Layer.succeed(Usage.Service, Usage.Service.of({ read: Effect.succeed({ claude: unchecked, codex: unchecked }) }))
 
 /** github, faked: `permissions` is who has what on every repository (everyone else: none) */
 export const fakeGitHub = (acknowledged: Array<number>, permissions: Record<string, Permission> = {}) =>

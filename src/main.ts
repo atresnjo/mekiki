@@ -10,13 +10,14 @@ import { Instance } from "./instance.ts"
 import * as Http from "./http.ts"
 import { Observability } from "./observability.ts"
 import * as Rpc from "./rpc-server.ts"
+import { Usage } from "./usage.ts"
 
 const Main = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* AppConfig
     const Routes = Layer.mergeAll(Http.routes(config), Rpc.routes(config), Auth.routes(config), Health.routes)
     // the lock first: a second instance stops before it resumes anyone's review
-    const Services = Layer.mergeAll(Health.layer, Auth.layer(config)).pipe(
+    const Services = Layer.mergeAll(Health.layer, Auth.layer(config), Usage.layer(config.agent)).pipe(
       Layer.provideMerge(App.layer(config)),
       Layer.provide(Instance.layer({ url: config.databaseUrl })),
     )

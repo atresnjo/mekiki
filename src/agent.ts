@@ -203,18 +203,13 @@ export const make = Effect.fn("Agent.make")(function* (options: Options) {
               "--skip-git-repo-check",
               "--ignore-user-config",
               "--ignore-rules",
-              // read-only everywhere is codex's default sandbox; with the code, a profile that may read
-              // only the checkout (plus the system files a shell needs): not your home directory
-              ...(request.code
-                ? [
-                    "-C",
-                    request.code,
-                    "-c",
-                    'default_permissions="review"',
-                    "-c",
-                    'permissions.review.filesystem={":minimal"="read", ":workspace_roots"="read"}',
-                  ]
-                : ["-s", "read-only", "-C", workDir]),
+              // Confine reads even in diff-only fallback: the default read-only sandbox can read home.
+              "-C",
+              request.code ?? workDir,
+              "-c",
+              'default_permissions="review"',
+              "-c",
+              'permissions.review.filesystem={":minimal"="read", ":workspace_roots"="read"}',
               // a repository's AGENTS.md is input from whoever wrote the pull request, not instructions
               "-c",
               "project_doc_max_bytes=0",
@@ -260,7 +255,11 @@ export const make = Effect.fn("Agent.make")(function* (options: Options) {
         ),
       ],
       { concurrency: "unbounded" },
-    ).pipe(Effect.scoped)
+    ).pipe(
+      Effect.timeout("10 seconds"),
+      Effect.mapError(() => fail(agent)(`${agent} login check failed or timed out`)),
+      Effect.scoped,
+    )
     // claude answers in json, and exits 0 either way in some versions: its word over the exit code
     if (agent === "claude" && /"loggedIn":\s*false/.test(status)) return yield* fail(agent)("claude isn't logged in")
     return version.trim()

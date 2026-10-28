@@ -118,6 +118,8 @@ glance always strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and friends from the 
 - **Claude Code:** the login from `claude` (keychain). On a headless server, run `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`.
 - **Codex:** `~/.codex/auth.json` from `codex login`; set `CODEX_HOME` to use another directory.
 
+The dashboard shows account-wide subscription usage (including use outside glance), with percent used and reset times. It checks Claude at most once every 15 minutes and Codex at most once every five, and never runs a model to read usage. Codex uses its [app-server rate-limit API](https://developers.openai.com/codex/app-server#6-rate-limits-chatgpt). Claude uses the CLI's OAuth usage endpoint with `CLAUDE_CODE_OAUTH_TOKEN`, its macOS keychain login, or `CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude`). That endpoint is not a public API contract: headless tokens may lack permission and usage checks may be rate limited. That rate limit is shared with `/usage` in Claude Code, so on a 429 glance waits out the endpoint's `Retry-After` (30 minutes if it sends none) before checking again. Those states appear as unavailable, never as zero usage. Claude Code owns token refresh; sign in again if usage reports an expired login. Credentials stay on the server.
+
 ## Configuration
 
 Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in Postgres (`DATABASE_URL`).
@@ -150,6 +152,7 @@ src/
   triggers.ts   who may start a review from github, and how often
   instance.ts   one glance per database: an advisory lock
   health.ts     /api/health, and the monitor that logs when an agent stops working
+  usage.ts      subscription usage for the dashboard: claude's oauth usage endpoint, codex's app-server, cached
   observability.ts  json logs, otlp
   http.ts       webhook
 scripts/        isolation-check.ts (a hostile pull request leaks nothing), backup.sh, restore-check.sh
@@ -161,3 +164,12 @@ web/            the dashboard: Vite, TanStack Router (file routes in src/routes)
 ```bash
 bun test && bun run typecheck && bun run lint && bun run fmt:check
 ```
+
+## End-to-end verification in a browser
+
+```bash
+bunx playwright install chromium
+bun run test:e2e:browser
+```
+
+This starts isolated local API and dashboard servers on ports 7520/7521, using PGlite, fixture CLI processes, and a local provider endpoint. It exercises sign-in, subscription usage, caching and provider failures, dry-run retries, child-process secret isolation and webhook authorization without calling models or writing to GitHub. Repeatable artifacts are saved to `.data/e2e/`: `report.json`, desktop/mobile screenshots, server logs and `trace.zip` (open with `bunx playwright show-trace .data/e2e/trace.zip`).

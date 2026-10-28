@@ -5,12 +5,14 @@ import { type RpcClient, type RpcGroup, RpcTest } from "effect/rpc"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
 import { GlanceRpcs, PAGE } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
-import { type Calls, configFrom, fakeAgent, fakeAuth, fakeHealth, fakeReviewer, memoryStore, review } from "./support.ts"
+import { type Calls, configFrom, fakeAgent, fakeAuth, fakeHealth, fakeReviewer, fakeUsage, memoryStore, review } from "./support.ts"
 
 const run = <A, E>(signIn: boolean, f: (client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof GlanceRpcs>>, calls: Calls) => Effect.Effect<A, E, Store.Service>) => {
   const config = configFrom({})
   const calls: Calls = { started: [], cancelled: [] }
-  const services = Layer.mergeAll(memoryStore(config), fakeAuth(signIn), fakeReviewer(calls), fakeAgent, fakeHealth).pipe(Layer.provideMerge(BunServices.layer))
+  const services = Layer.mergeAll(memoryStore(config), fakeAuth(signIn), fakeReviewer(calls), fakeAgent, fakeHealth, fakeUsage).pipe(
+    Layer.provideMerge(BunServices.layer),
+  )
   return Effect.runPromise(
     Effect.gen(function* () {
       const client = yield* RpcTest.makeClient(GlanceRpcs)

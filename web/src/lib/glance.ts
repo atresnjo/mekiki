@@ -7,7 +7,7 @@ import { FetchHttpClient } from "effect/http"
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 
-export type { Depth, Finding, Models, Review, Settings, Severity, Status, User } from "@glance/api"
+export type { Depth, Finding, Models, ProviderUsage, Review, Settings, Severity, Status, User } from "@glance/api"
 
 // the api lives on this origin: vite forwards /api/ to it in dev, a reverse proxy does in production
 
@@ -25,6 +25,7 @@ export class Glance extends AtomRpc.Service<Glance>()("Glance", {
 
 // ---------- reads ----------
 
+export const usageAtom = Glance.query("GetUsage", undefined)
 export const statusAtom = Glance.query("GetStatus", undefined)
 /** the model lists cost the server a process spawn: mounted only by the settings dialog */
 export const modelsAtom = Glance.query("GetModels", undefined)

@@ -10,6 +10,7 @@ import { Health } from "./health.ts"
 import { Reviewer } from "./reviewer.ts"
 import { Authenticated, CurrentUser, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
 import { Store } from "./store.ts"
+import { Usage } from "./usage.ts"
 
 const depthOverride = (depth: Depth | undefined) => (depth ? { depth } : {})
 
@@ -48,6 +49,7 @@ export const HandlersLive = (config: AppConfig) =>
       const agent = yield* Agent.Service
       const health = yield* Health.Service
       const auth = yield* Auth.Service
+      const usage = yield* Usage.Service
 
       const reviewById = Effect.fn("Rpc.reviewById")(function* (id: number) {
         const review = yield* store.get(id)
@@ -95,7 +97,11 @@ export const HandlersLive = (config: AppConfig) =>
 
         RetryReview: Effect.fn("Rpc.RetryReview")(function* ({ id, depth }) {
           const review = yield* reviewById(id)
-          yield* reviewer.start(prOf(review), { trigger: yield* by(depth ? `retry ${depth}` : "retry"), overrides: depthOverride(depth) })
+          yield* reviewer.start(prOf(review), {
+            trigger: yield* by(depth ? `retry ${depth}` : "retry"),
+            dryRun: review.dryRun,
+            overrides: depthOverride(depth),
+          })
         }, api),
 
         CancelReview: Effect.fn("Rpc.CancelReview")(function* ({ id }) {
@@ -103,6 +109,8 @@ export const HandlersLive = (config: AppConfig) =>
           yield* Effect.logInfo(`${yield* by("cancelled")} ${review.repo}#${review.number}`)
           yield* reviewer.cancel(prOf(review))
         }, api),
+
+        GetUsage: () => usage.read.pipe(api),
 
         GetStatus: Effect.fn("Rpc.GetStatus")(function* () {
           const agents = yield* health.agents

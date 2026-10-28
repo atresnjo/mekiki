@@ -58,10 +58,10 @@ export const StartForm = ({ reviews, depth, onDepth }: { reviews: ReadonlyArray<
   const navigate = useNavigate()
 
   // a review started from here opens as soon as it shows up
-  const [awaiting, setAwaiting] = useState<string | undefined>()
+  const [awaiting, setAwaiting] = useState<{ url: string; afterId: number } | undefined>()
   useEffect(() => {
     if (!awaiting) return
-    const found = reviews.find((r) => r.status === "running" && r.url.toLowerCase().startsWith(awaiting))
+    const found = reviews.find((r) => r.id > awaiting.afterId && r.url.toLowerCase() === awaiting.url)
     if (found) {
       setAwaiting(undefined)
       navigate({ to: "/reviews/$id", params: { id: String(found.id) } })
@@ -71,12 +71,13 @@ export const StartForm = ({ reviews, depth, onDepth }: { reviews: ReadonlyArray<
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!url.trim()) return
+    const afterId = Math.max(0, ...reviews.map((review) => review.id))
     setBusy(true)
     const exit = report(await start({ payload: { url: url.trim(), dryRun, depth } }))
     setBusy(false)
     if (Exit.isFailure(exit)) return
     const m = url.trim().match(/github\.com\/[^/]+\/[^/]+\/pull\/\d+/i)
-    if (m) setAwaiting(`https://${m[0].toLowerCase()}`)
+    if (m) setAwaiting({ url: `https://${m[0].toLowerCase()}`, afterId })
     setUrl("")
   }
 

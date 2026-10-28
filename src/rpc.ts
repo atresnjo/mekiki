@@ -53,6 +53,24 @@ export interface Model extends Schema.Schema.Type<typeof Model> {}
 export const Models = Schema.Struct({ claude: Schema.Array(Model), codex: Schema.Array(Model) })
 export interface Models extends Schema.Schema.Type<typeof Models> {}
 
+/** Provider-reported account usage, including activity outside glance. No credentials cross RPC. */
+export const UsageWindow = Schema.Struct({
+  label: Schema.String,
+  usedPercent: Schema.Finite,
+  resetsAt: Schema.NullOr(Schema.Finite),
+})
+export interface UsageWindow extends Schema.Schema.Type<typeof UsageWindow> {}
+
+export const ProviderUsage = Schema.Struct({
+  windows: Schema.Array(UsageWindow),
+  checkedAt: Schema.Finite,
+  unavailable: Schema.NullOr(Schema.String),
+})
+export interface ProviderUsage extends Schema.Schema.Type<typeof ProviderUsage> {}
+
+export const SubscriptionUsage = Schema.Struct({ claude: ProviderUsage, codex: ProviderUsage })
+export interface SubscriptionUsage extends Schema.Schema.Type<typeof SubscriptionUsage> {}
+
 export const Status = Schema.Struct({
   /** the version each cli reports, or null when it isn't installed or logged in */
   agents: Schema.Struct({ claude: Schema.NullOr(Schema.String), codex: Schema.NullOr(Schema.String) }),
@@ -91,6 +109,7 @@ export class GlanceRpcs extends RpcGroup.make(
   /** review the same pull request again, at another depth if one is given */
   Rpc.make("RetryReview", { payload: { id: Schema.Finite, depth: Schema.optional(Depth) }, error: ApiError }),
   Rpc.make("CancelReview", { payload: { id: Schema.Finite }, error: ApiError }),
+  Rpc.make("GetUsage", { success: SubscriptionUsage, error: ApiError }),
   Rpc.make("GetStatus", { success: Status, error: ApiError }),
   Rpc.make("GetSettings", { success: Settings, error: ApiError }),
   /** only a model the chosen cli offers */
