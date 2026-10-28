@@ -43,18 +43,107 @@ export const ChunkReview = Schema.Struct({
 })
 export interface ChunkReview extends Schema.Schema.Type<typeof ChunkReview> {}
 
+/** when a pull request opens: review it right away, or post the depth checkboxes and wait for a tick */
+export const Mode = Schema.Literals(["ask", "auto"])
+export type Mode = typeof Mode.Type
+
 export const Settings = Schema.Struct({
   agent: AgentKind,
   /** empty: the CLI's own default */
   model: Schema.String,
   depth: Depth,
-  /** when a pull request opens: review it right away, or post the depth checkboxes and wait for a tick */
-  mode: Schema.Literals(["ask", "auto"]),
+  mode: Mode,
   postComments: Schema.Boolean,
   maxFindings: Schema.Finite,
   minConfidence: Schema.Finite,
+  /**
+   * the team's review rules, in plain language. they come from here and nowhere else: the repository's
+   * own CLAUDE.md or AGENTS.md is ignored, since a pull request can edit them
+   */
+  rules: Schema.String,
+  /** github logins whose pull requests are never reviewed on their own, and get no comment */
+  blockedAuthors: Schema.Array(Schema.String),
+  /** not empty: in auto mode only these authors' pull requests are reviewed right away, the rest get the checkboxes */
+  allowedAuthors: Schema.Array(Schema.String),
+  /** globs of files never reviewed, on top of lockfiles and generated files */
+  exclude: Schema.Array(Schema.String),
 })
 export interface Settings extends Schema.Schema.Type<typeof Settings> {}
+
+/** one repository's own settings, on top of the dashboard's: a null mode or depth is the global one, the lists add to the global lists */
+export const RepoSettings = Schema.Struct({
+  /** owner/repo, lowercase */
+  repo: Schema.String,
+  mode: Schema.NullOr(Mode),
+  depth: Schema.NullOr(Depth),
+  rules: Schema.String,
+  blockedAuthors: Schema.Array(Schema.String),
+  allowedAuthors: Schema.Array(Schema.String),
+  exclude: Schema.Array(Schema.String),
+})
+export interface RepoSettings extends Schema.Schema.Type<typeof RepoSettings> {}
+
+/** a repository with nothing of its own yet */
+export const repoSettings = (repo: string): RepoSettings => ({
+  repo: repo.toLowerCase(),
+  mode: null,
+  depth: null,
+  rules: "",
+  blockedAuthors: [],
+  allowedAuthors: [],
+  exclude: [],
+})
+
+/** rules longer than this aren't saved: every character is sent with every chunk */
+export const RULES_MAX = 4000
+
+/** entries past this in an author or exclude list aren't saved */
+export const LIST_MAX = 200
+
+const REPO = /^[\w.-]+\/[\w.-]+$/
+/** a github login: letters, digits and dashes, and an app's `[bot]` */
+const LOGIN = /^[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\[bot\])?$/i
+
+export const isRepo = (text: string) => REPO.test(text)
+export const isLogin = (text: string) => LOGIN.test(text)
+
+const union = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) => [...new Set([...a, ...b])]
+
+/** what a review of this repository runs with: the global settings, with the repository's on top */
+export const effective = (global: Settings, repo: RepoSettings | undefined): Settings =>
+  repo === undefined
+    ? global
+    : {
+        ...global,
+        mode: repo.mode ?? global.mode,
+        depth: repo.depth ?? global.depth,
+        rules: [global.rules.trim(), repo.rules.trim()].filter(Boolean).join("\n\n"),
+        blockedAuthors: union(global.blockedAuthors, repo.blockedAuthors),
+        allowedAuthors: union(global.allowedAuthors, repo.allowedAuthors),
+        exclude: union(global.exclude, repo.exclude),
+      }
+
+/** logins compare without case, as on github */
+export const listsAuthor = (logins: ReadonlyArray<string>, login: string) => logins.some((l) => l.toLowerCase() === login.toLowerCase())
+
+/** a list as typed: trimmed, empty entries and repeats dropped */
+export const cleanList = (entries: ReadonlyArray<string>) => [...new Set(entries.map((e) => e.trim()).filter(Boolean))]
+
+/** what's wrong with these rules and lists, if anything: they're saved only when nothing is */
+export const settingsProblem = (s: Pick<Settings, "rules" | "blockedAuthors" | "allowedAuthors" | "exclude">): string | undefined => {
+  if (s.rules.length > RULES_MAX) return `rules are ${s.rules.length} characters; at most ${RULES_MAX}`
+  for (const [name, list] of [
+    ["blocked authors", s.blockedAuthors],
+    ["allowed authors", s.allowedAuthors],
+    ["exclude patterns", s.exclude],
+  ] as const)
+    if (list.length > LIST_MAX) return `${list.length} ${name}; at most ${LIST_MAX}`
+  const login = [...s.blockedAuthors, ...s.allowedAuthors].find((l) => !isLogin(l))
+  if (login !== undefined) return `"${login}" isn't a github login`
+  const glob = s.exclude.find((g) => g.length > 200)
+  if (glob !== undefined) return `exclude pattern "${glob.slice(0, 40)}…" is too long`
+  return undefined
+}
 
 export const ReviewStatus = Schema.Literals(["running", "done", "failed", "cancelled", "skipped"])
 export type ReviewStatus = typeof ReviewStatus.Type

@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from "node:crypto"
 import { Effect, FiberSet, Layer, Option, Redacted, Schema, Stream } from "effect"
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { AppConfig } from "./config.ts"
-import { type Depth, depthIn } from "./domain.ts"
+import { type Depth, depthIn, listsAuthor, prKey } from "./domain.ts"
 import { Checkout } from "./checkout.ts"
 import { GitHub } from "./github.ts"
 import { MARKER, Panel, tickedDepth } from "./panel.ts"
@@ -105,8 +105,6 @@ const handlers = (config: AppConfig) =>
 
     /** what the delivery asks for, once it's known to be github's and new */
     const handle = Effect.fnUntraced(function* (event: string | undefined, body: string) {
-      const settings = yield* store.settings
-
       if (event === "pull_request") {
         const payload = yield* decodeJson(PullRequestEvent)(body)
         const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.number }
@@ -119,11 +117,25 @@ const handlers = (config: AppConfig) =>
           yield* reviewer.start(ref, { trigger: `label ${depth}`, overrides: depthOverride(depth) })
           return json({ ok: true, reviewing: true, depth }, 202)
         } else if (REVIEW_ACTIONS.has(payload.action)) {
+          // the repository's own settings, on top of the global ones
+          const settings = yield* store.settingsFor(`${ref.owner}/${ref.repo}`)
+          const author = payload.pull_request.user
+          // a blocked author's pull request (a dependency bot's, say) is left alone: no review, no comment.
+          // a /glance comment, a label or the dashboard still reviews it
+          if (listsAuthor(settings.blockedAuthors, author.login)) {
+            yield* Effect.logInfo(`not reviewing ${prKey(ref)}: ${author.login} is a blocked author`)
+            return json({ ok: true, reviewing: false, blocked: author.login })
+          }
           const last = yield* store.lastDone(`${ref.owner}/${ref.repo}`, ref.number)
-          // a stranger's pull request (from a fork, say) isn't reviewed on its own: it gets the
-          // checkboxes, for someone with the permission to tick
-          const automatic = settings.mode === "auto" ? yield* triggers.allowAutomatic(ref, payload.pull_request.user) : undefined
-          if (automatic && !automatic.ok) yield* Effect.logInfo(`asking instead of reviewing ${ref.owner}/${ref.repo}#${ref.number}: ${automatic.reason}`)
+          // a stranger's pull request (from a fork, say), or one by someone off the allowed authors list,
+          // isn't reviewed on its own: it gets the checkboxes, for someone with the permission to tick
+          const automatic =
+            settings.mode !== "auto"
+              ? undefined
+              : settings.allowedAuthors.length > 0 && !listsAuthor(settings.allowedAuthors, author.login)
+                ? ({ ok: false, reason: `${author.login} isn't one of the allowed authors` } as const)
+                : yield* triggers.allowAutomatic(ref, author)
+          if (automatic && !automatic.ok) yield* Effect.logInfo(`asking instead of reviewing ${prKey(ref)}: ${automatic.reason}`)
           if (automatic?.ok) {
             // follow-ups keep the depth this pull request was last reviewed at
             const depth = labelDepth(payload.pull_request.labels) ?? Option.getOrUndefined(Option.map(last, (r) => r.depth))
@@ -171,6 +183,8 @@ const handlers = (config: AppConfig) =>
           !payload.comment.body.includes(MARKER) &&
           COMMAND.test(payload.comment.body)
         ) {
+          // read first: a database that's down shouldn't use up the person's reviews this hour
+          const settings = yield* store.settingsFor(`${ref.owner}/${ref.repo}`)
           const verdict = yield* triggers.allow(ref, payload.comment.user)
           if (!verdict.ok) return yield* refused(verdict, payload.comment.user)
           // a depth in the comment beats the label, which beats the default

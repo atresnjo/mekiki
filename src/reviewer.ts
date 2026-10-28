@@ -30,7 +30,7 @@ export interface StartOptions {
   readonly dryRun?: boolean
   /** a pushed commit: skip drafts and commits that were already reviewed */
   readonly automatic?: boolean
-  /** this review only: on top of the saved settings */
+  /** this review only: on top of the saved settings (the repository's, on top of the global ones) */
   readonly overrides?: Partial<Settings>
 }
 
@@ -221,9 +221,9 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
     }
 
     const files = Diff.parseDiff(diff)
-    const { selected, skipped } = Diff.select(files, { maxTotalChars: limits.maxDiffChars, maxFileChars: limits.maxFileChars })
+    const { selected, skipped } = Diff.select(files, { maxTotalChars: limits.maxDiffChars, maxFileChars: limits.maxFileChars, exclude: settings.exclude })
     if (selected.length === 0)
-      return yield* new Skip({ reason: skipped.length > 0 ? "every changed file was skipped (generated, binary or too large)" : "no changes" })
+      return yield* new Skip({ reason: skipped.length > 0 ? "every changed file was skipped (generated, binary, excluded or too large)" : "no changes" })
 
     const chunks = Diff.chunk(selected, limits.chunkChars)
     yield* save(id, { files: selected.length, skippedFiles: skipped.length, chunks: chunks.length, incremental, steps: [...steps] })
@@ -245,7 +245,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
               agent: settings.agent,
               model: settings.model,
               effort: EFFORT[settings.depth],
-              system: system(dir !== undefined),
+              system: system(dir !== undefined, settings.rules),
               code: dir,
               prompt: reviewPrompt({ title: pr.title, body: pr.body ?? "", files: chunkFiles, part: i + 1, parts: chunks.length, incremental }),
             })
@@ -334,7 +334,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
   })
 
   const run = Effect.fn("Reviewer.run")(function* (ref: PrRef, options: StartOptions) {
-    const settings = { ...(yield* store.settings), ...options.overrides }
+    const settings = { ...(yield* store.settingsFor(`${ref.owner}/${ref.repo}`)), ...options.overrides }
     const created = yield* record(ref, options, settings)
     yield* PubSub.publish(changes, created)
     const finish = (patch: Partial<Omit<Review, "id">>) =>
@@ -379,7 +379,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
   // too many reviews at once: this one is recorded as skipped (the dashboard and github's comment
   // say why, and the boxes are there to try again) instead of waiting in a queue that only grows
   const turnAway = Effect.fn("Reviewer.turnAway")(function* (ref: PrRef, options: StartOptions, queued: number) {
-    const settings = { ...(yield* store.settings), ...options.overrides }
+    const settings = { ...(yield* store.settingsFor(`${ref.owner}/${ref.repo}`)), ...options.overrides }
     const created = yield* record(ref, options, settings)
     const review = yield* save(created.id, {
       status: "skipped",

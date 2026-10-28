@@ -5,7 +5,7 @@ import { RpcSerialization, RpcServer } from "effect/rpc"
 import { Agent } from "./agent.ts"
 import { Auth } from "./auth.ts"
 import type { AppConfig } from "./config.ts"
-import { type Depth, parsePrUrl, type Review } from "./domain.ts"
+import { cleanList, type Depth, isRepo, parsePrUrl, type Review, type Settings, settingsProblem } from "./domain.ts"
 import { Health } from "./health.ts"
 import { Reviewer } from "./reviewer.ts"
 import { Authenticated, CurrentUser, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
@@ -13,6 +13,19 @@ import { Store } from "./store.ts"
 import { Usage } from "./usage.ts"
 
 const depthOverride = (depth: Depth | undefined) => (depth ? { depth } : {})
+
+/** the rules and lists as saved: lists tidied, and refused when something in them can't be right */
+const checked = <S extends Pick<Settings, "rules" | "blockedAuthors" | "allowedAuthors" | "exclude">>(settings: S) => {
+  const clean = {
+    ...settings,
+    rules: settings.rules.trim(),
+    blockedAuthors: cleanList(settings.blockedAuthors),
+    allowedAuthors: cleanList(settings.allowedAuthors),
+    exclude: cleanList(settings.exclude),
+  }
+  const problem = settingsProblem(clean)
+  return problem === undefined ? Effect.succeed(clean) : Effect.fail(new Invalid({ message: problem }))
+}
 
 /** what started a review, and who: "manual by alice@acme.com" */
 const by = (trigger: string) => Effect.map(CurrentUser, (user) => (user.email ? `${trigger} by ${user.email}` : trigger))
@@ -125,8 +138,25 @@ export const HandlersLive = (config: AppConfig) =>
           const offered = yield* models
           if (!offered[settings.agent].some((model) => model.id === settings.model))
             return yield* new Invalid({ message: `${settings.agent} has no model "${settings.model}"` })
-          return yield* store.saveSettings(settings)
+          return yield* store.saveSettings(yield* checked(settings))
         }, api),
+
+        GetRepoSettings: () => store.repoSettings.pipe(api),
+
+        SaveRepoSettings: Effect.fn("Rpc.SaveRepoSettings")(function* (settings) {
+          const repo = settings.repo.trim()
+          if (!isRepo(repo)) return yield* new Invalid({ message: `expected a repository like owner/repo, not "${settings.repo}"` })
+          const clean = yield* checked({ ...settings, repo })
+          yield* Effect.logInfo(`${yield* by("repository settings saved")} for ${repo}`)
+          return yield* store.saveRepoSettings(clean)
+        }, api),
+
+        DeleteRepoSettings: Effect.fn("Rpc.DeleteRepoSettings")(function* ({ repo }) {
+          yield* Effect.logInfo(`${yield* by("repository settings removed")} for ${repo}`)
+          yield* store.deleteRepoSettings(repo.trim())
+        }, api),
+
+        GetReviewedRepos: () => store.reviewedRepos.pipe(api),
       })
     }),
   )

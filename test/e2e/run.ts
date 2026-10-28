@@ -181,6 +181,43 @@ try {
       record("rate-limited Claude usage waits out Retry-After before calling the provider again")
     }
   }
+  await page.getByRole("button", { name: "Settings" }).click()
+  await page.getByRole("tab", { name: "Rules" }).click()
+  await page.getByLabel("Team rules").fill("We use Effect: never throw.")
+  await page.getByRole("tab", { name: "Repositories" }).click()
+  // a repository glance has reviewed is suggested
+  await page.getByLabel("Add a repository").fill("acme")
+  await page.getByRole("option", { name: "acme/api" }).click()
+  await page.getByRole("button", { name: "Add", exact: true }).click()
+  // the repository's own blocked authors: the global ones are on the rules tab
+  await page.getByLabel("Blocked authors").fill("dependabot[bot]")
+  await page.getByLabel("Blocked authors").press("Enter")
+  await page.screenshot({ path: join(artifacts, "repo-settings.png") })
+  await page.getByRole("button", { name: "Save" }).click()
+  await expect(page.getByText("Settings saved")).toBeVisible()
+  expect(await rpc("GetSettings", null)).toContain('"rules":"We use Effect: never throw."')
+  expect(await rpc("GetRepoSettings", null)).toContain('"repo":"acme/api","mode":null,"depth":null,"rules":"","blockedAuthors":["dependabot[bot]"]')
+  const opened = JSON.stringify({
+    action: "opened",
+    number: 8,
+    pull_request: { draft: false, head: { sha: "d1" }, labels: [], user: { login: "dependabot[bot]", type: "Bot" } },
+    repository: { name: "api", owner: { login: "acme" } },
+    sender: { login: "dependabot[bot]", type: "Bot" },
+  })
+  const panelsBefore = (await fetch("http://127.0.0.1:7520/_fixture").then((r) => r.json())).panels
+  const blocked = await fetch("http://127.0.0.1:7520/api/webhooks/github", {
+    method: "POST",
+    body: opened,
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-github-delivery": "fixture-blocked",
+      "x-hub-signature-256": `sha256=${createHmac("sha256", "e2e-webhook").update(opened).digest("hex")}`,
+    },
+  })
+  expect(await blocked.json()).toMatchObject({ reviewing: false, blocked: "dependabot[bot]" })
+  expect((await fetch("http://127.0.0.1:7520/_fixture").then((r) => r.json())).panels).toBe(panelsBefore)
+  record("team rules and a repository's blocked author saved in the dashboard; that author's pull request gets no comment")
   expect(errors).toEqual([])
   record("no browser runtime errors")
   await Bun.write(join(artifacts, "report.json"), JSON.stringify({ passed: checks, browserErrors: errors, completedAt: new Date().toISOString() }, null, 2))

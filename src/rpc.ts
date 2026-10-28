@@ -5,10 +5,24 @@
 // not in here, on purpose: the github webhook (plain http, guarded by its signature)
 import { Context, Duration, Schema } from "effect"
 import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
-import { Depth, Review, Settings } from "./domain.ts"
+import { Depth, RepoSettings, Review, Settings } from "./domain.ts"
 
-// what the dashboard shows comes from the domain
-export { Depth, Finding, Review, Settings, Severity } from "./domain.ts"
+// what the dashboard shows comes from the domain, and so do the checks its settings get
+export {
+  cleanList,
+  Depth,
+  Finding,
+  isLogin,
+  isRepo,
+  LIST_MAX,
+  RepoSettings,
+  repoSettings,
+  Review,
+  RULES_MAX,
+  Settings,
+  settingsProblem,
+  Severity,
+} from "./domain.ts"
 
 /** where the server mounts the rpc endpoint */
 export const RPC_PATH = "/api/rpc"
@@ -114,5 +128,13 @@ export class GlanceRpcs extends RpcGroup.make(
   Rpc.make("GetSettings", { success: Settings, error: ApiError }),
   /** only a model the chosen cli offers */
   Rpc.make("SaveSettings", { payload: Settings, success: Settings, error: ApiError }),
+  /** every repository with settings of its own */
+  Rpc.make("GetRepoSettings", { success: Schema.Array(RepoSettings), error: ApiError }),
+  /** a repository's settings, by owner/repo: saved whole, replacing what it had */
+  Rpc.make("SaveRepoSettings", { payload: RepoSettings, success: RepoSettings, error: ApiError }),
+  /** back to the global settings */
+  Rpc.make("DeleteRepoSettings", { payload: { repo: Schema.String }, error: ApiError }),
+  /** the repositories glance has reviewed: what adding one suggests */
+  Rpc.make("GetReviewedRepos", { success: Schema.Array(Schema.String), error: ApiError }),
   Rpc.make("GetModels", { success: Models, error: ApiError }),
 ).middleware(Authenticated) {}
