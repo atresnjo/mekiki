@@ -2,11 +2,13 @@ import { expect, test } from "bun:test"
 import { createVerify, generateKeyPairSync } from "node:crypto"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Option, Schedule } from "effect"
-import type { PrRef } from "../src/domain.ts"
+import { Database } from "../src/database.ts"
+import { type PrRef, repoSettings } from "../src/domain.ts"
 import { appJwt, GitHub } from "../src/github.ts"
 import { Reviewer } from "../src/reviewer.ts"
+import { settings as settingsTable } from "../src/schema.ts"
 import { Store } from "../src/store.ts"
-import { configFrom, fakeAgent, fakeCheckout, fakeGitHub, fakePanel, memoryStore, review } from "./support.ts"
+import { configFrom, fakeAgent, fakeCheckout, fakeGitHub, fakePanel, memoryDatabase, memoryStore, review } from "./support.ts"
 
 const config = configFrom({})
 const withStore = <A, E>(f: (store: Store.Interface) => Effect.Effect<A, E>) =>
@@ -143,4 +145,83 @@ test("past MAX_QUEUED_REVIEWS a review is turned away, and says so; replacing a 
   ])
   expect(rows[1]?.summary).toContain("glance is busy")
   expect(shown.some((s) => s.pr.number === 2 && s.kind === "finished")).toBe(true)
+})
+
+test("settings saved before rules and author lists existed still read, the new fields from the environment", async () => {
+  const env = configFrom({ GLANCE_BLOCKED_AUTHORS: "dependabot[bot]", GLANCE_EXCLUDE: "*.snap" })
+  const settings = await Effect.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database.Service
+      // written by an older glance
+      yield* db.insert(settingsTable).values({
+        id: 1,
+        data: { agent: "codex", model: "", depth: "high", mode: "auto", postComments: false, maxFindings: 5, minConfidence: 0.7 } as never,
+      })
+      return yield* (yield* Store.Service).settings
+    }).pipe(Effect.provide(Store.layer({ defaults: env.defaults }).pipe(Layer.provideMerge(memoryDatabase)))),
+  )
+  expect(settings).toMatchObject({
+    agent: "codex",
+    depth: "high",
+    mode: "auto",
+    rules: "",
+    blockedAuthors: ["dependabot[bot]"],
+    allowedAuthors: [],
+    exclude: ["*.snap"],
+  })
+})
+
+test("a repository's settings go on top of the global ones, under any case, until they're removed", async () => {
+  const result = await withStore((store) =>
+    Effect.gen(function* () {
+      yield* store.saveSettings({ ...(yield* store.settings), rules: "Never throw.", exclude: ["*.snap"] })
+      yield* store.saveRepoSettings({
+        ...repoSettings("acme/api"),
+        repo: "Acme/API",
+        depth: "high",
+        rules: "Migrations must be reversible.",
+        exclude: ["/docs/**"],
+      })
+      const own = yield* store.settingsFor("acme/Api")
+      const other = yield* store.settingsFor("acme/web")
+      const listed = yield* store.repoSettings
+      yield* store.deleteRepoSettings("ACME/api")
+      return { own, other, listed, after: yield* store.settingsFor("acme/api") }
+    }),
+  )
+  expect(result.own).toMatchObject({ depth: "high", mode: "ask", rules: "Never throw.\n\nMigrations must be reversible.", exclude: ["*.snap", "/docs/**"] })
+  expect(result.other).toMatchObject({ depth: "light", rules: "Never throw.", exclude: ["*.snap"] })
+  expect(result.listed.map((r) => [r.repo, r.depth])).toEqual([["acme/api", "high"]])
+  expect(result.after).toEqual(result.other)
+})
+
+test("the repositories glance has reviewed, once each", async () => {
+  const repos = await withStore((store) =>
+    Effect.gen(function* () {
+      for (const repo of ["acme/web", "acme/api", "acme/web"]) yield* store.create(review({ repo }))
+      return yield* store.reviewedRepos
+    }),
+  )
+  expect(repos).toEqual(["acme/api", "acme/web"])
+})
+
+test("a review runs with its repository's settings", async () => {
+  const depths = await Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* Store.Service
+      const reviewer = yield* Reviewer.Service
+      yield* store.saveRepoSettings({ ...repoSettings("acme/api"), depth: "high" })
+      // the fake github fails the review: what it was recorded with is what counts
+      const own = yield* reviewer.run({ owner: "acme", repo: "api", number: 1 }, { trigger: "manual", dryRun: true })
+      const other = yield* reviewer.run({ owner: "acme", repo: "web", number: 1 }, { trigger: "manual", dryRun: true })
+      const asked = yield* reviewer.run({ owner: "acme", repo: "api", number: 2 }, { trigger: "manual", dryRun: true, overrides: { depth: "medium" } })
+      return [own.depth, other.depth, asked.depth]
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Reviewer.layer(config.limits)),
+      Effect.provide(Layer.mergeAll(fakeGitHub([]), fakeAgent, fakePanel([]), fakeCheckout).pipe(Layer.provideMerge(memoryStore(config)))),
+      Effect.provide(BunServices.layer),
+    ),
+  )
+  expect(depths).toEqual(["high", "light", "medium"])
 })

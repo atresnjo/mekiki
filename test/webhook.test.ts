@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, PubSub } from "effect"
 import { HttpRouter } from "effect/http"
-import type { PrRef, Review } from "../src/domain.ts"
+import { type PrRef, repoSettings, type Review } from "../src/domain.ts"
 import * as Http from "../src/http.ts"
 import { render } from "../src/panel.ts"
 import { Reviewer } from "../src/reviewer.ts"
@@ -234,5 +234,80 @@ test("a delivery glance failed handling is let go, so its redelivery is acted on
   expect((await send(labeled, "outage")).status).toBe(202)
   expect((await send({ action: "opened" }, "malformed")).status).toBe(400)
   expect(await (await send({ action: "opened" }, "malformed")).json()).toEqual({ ok: true, duplicate: true })
+  await web.dispose()
+})
+
+/** a webhook of its own: its environment, what's saved before the first delivery, and what it started and showed */
+const harness = (env: Record<string, string>, seed: (store: Store.Interface) => Effect.Effect<unknown, Store.StoreError> = () => Effect.void) => {
+  const own = configFrom({ GITHUB_WEBHOOK_SECRET: SECRET, ...env })
+  const calls: Calls = { started: [], cancelled: [] }
+  const shown: Array<{ readonly pr: PrRef; readonly kind: string }> = []
+  const web = HttpRouter.toWebHandler(
+    Layer.mergeAll(Http.routes(own), Layer.effectDiscard(Effect.flatMap(Store.Service, seed))).pipe(
+      Layer.provide(
+        Layer.mergeAll(memoryStore(own), fakeReviewer(calls), fakePanel(shown), fakeCheckout, Triggers.layer(own.triggers)).pipe(
+          Layer.provideMerge(fakeGitHub([], { writer: "write", maintainer: "maintain" })),
+        ),
+      ),
+      Layer.provide(BunServices.layer),
+    ),
+    { disableLogger: true },
+  )
+  const send = (event: string, payload: unknown) => {
+    const body = JSON.stringify(payload)
+    return web.handler(
+      new Request("http://glance/api/webhooks/github", {
+        method: "POST",
+        body,
+        headers: { "x-github-event": event, "x-hub-signature-256": `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}` },
+      }),
+    )
+  }
+  return { calls, shown, send, dispose: web.dispose }
+}
+
+const openedBy = (login: string, type = "User", repo = repository) =>
+  pullRequest("opened", { pull_request: { draft: false, head: { sha: "b1" }, labels: [], user: user(login, type) }, repository: repo })
+
+test("a blocked author's pull request gets no review and no comment; /glance still reviews it", async () => {
+  // blocked globally from the environment, and in acme/api of its own (any case, as on github)
+  const web = harness({ GLANCE_MODE: "auto", GLANCE_BLOCKED_AUTHORS: "dependabot[bot]" }, (store) =>
+    store.saveRepoSettings({ ...repoSettings("acme/api"), mode: "ask", blockedAuthors: ["Renovate[bot]"] }),
+  )
+  const dependabot = await web.send("pull_request", openedBy("dependabot[bot]", "Bot"))
+  const renovate = await web.send("pull_request", openedBy("renovate[bot]", "Bot"))
+  expect(await dependabot.json()).toEqual({ ok: true, reviewing: false, blocked: "dependabot[bot]" })
+  expect(await renovate.json()).toEqual({ ok: true, reviewing: false, blocked: "renovate[bot]" })
+  expect(web.calls.started).toEqual([])
+  expect(web.shown).toEqual([])
+  // someone who may can still ask for it
+  const asked = await web.send("issue_comment", comment("/glance high", "maintainer"))
+  expect(asked.status).toBe(202)
+  expect(web.calls.started.map((s) => s.options.trigger)).toEqual(["comment high"])
+  await web.dispose()
+})
+
+test("with allowed authors, only theirs are reviewed right away in auto mode; the rest get the checkboxes", async () => {
+  const web = harness({ GLANCE_MODE: "auto" }, (store) =>
+    Effect.flatMap(store.settings, (settings) => store.saveSettings({ ...settings, allowedAuthors: ["Maintainer"] })),
+  )
+  const writer = await web.send("pull_request", openedBy("writer"))
+  expect(await writer.json()).toMatchObject({ reviewing: false, asked: true })
+  expect(web.shown.at(-1)?.kind).toBe("waiting")
+  expect(web.calls.started).toEqual([])
+  const maintainer = await web.send("pull_request", openedBy("maintainer"))
+  expect(maintainer.status).toBe(202)
+  expect(web.calls.started.length).toBe(1)
+  await web.dispose()
+})
+
+test("a repository's own mode and depth replace the global ones; other repositories keep the global settings", async () => {
+  const web = harness({ GLANCE_MODE: "ask" }, (store) => store.saveRepoSettings({ ...repoSettings("Acme/API"), mode: "auto", depth: "high" }))
+  const own = await web.send("pull_request", openedBy("writer"))
+  expect(own.status).toBe(202)
+  expect(await own.json()).toMatchObject({ reviewing: true, depth: "high" })
+  const other = await web.send("pull_request", openedBy("writer", "User", { name: "web", owner: { login: "acme" } }))
+  expect(await other.json()).toMatchObject({ reviewing: false, asked: true })
+  expect(web.calls.started.map((s) => s.pr.repo)).toEqual(["api"])
   await web.dispose()
 })

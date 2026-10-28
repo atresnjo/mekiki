@@ -83,6 +83,24 @@ const IGNORED: ReadonlyArray<RegExp> = [
 
 export const isIgnored = (path: string) => IGNORED.some((re) => re.test(path))
 
+/**
+ * a settings glob as people write them: `*.snap` or `fixtures/` anywhere, `/docs/**` from the root.
+ * gitignore's way, since that's the one everybody knows
+ */
+const toGlob = (pattern: string) => {
+  // a trailing slash: everything under that directory
+  const glob = pattern.endsWith("/") ? `${pattern}**` : pattern
+  // a leading slash, or one in the middle: from the root. none: at any depth
+  if (glob.startsWith("/")) return glob.slice(1)
+  return pattern.replace(/\/$/, "").includes("/") ? glob : `**/${glob}`
+}
+
+/** the exclude pattern a path matches, if any */
+export const excludedBy = (patterns: ReadonlyArray<string>) => {
+  const globs = patterns.map((pattern) => [pattern, new Bun.Glob(toGlob(pattern))] as const)
+  return (path: string) => globs.find(([, glob]) => glob.match(path))?.[0]
+}
+
 /** lower is reviewed first when the diff doesn't fit */
 const priority = (path: string): number => {
   if (/(auth|security|crypto|payment|billing|session|token|password|secret|permission|migration)/i.test(path)) return 0
@@ -100,15 +118,21 @@ export interface Selection {
   readonly skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>
 }
 
-export const select = (files: ReadonlyArray<FileDiff>, options: { readonly maxTotalChars: number; readonly maxFileChars: number }): Selection => {
+export const select = (
+  files: ReadonlyArray<FileDiff>,
+  options: { readonly maxTotalChars: number; readonly maxFileChars: number; readonly exclude?: ReadonlyArray<string> },
+): Selection => {
+  const excluded = excludedBy(options.exclude ?? [])
   const selected: Array<FileDiff> = []
   const skipped: Array<{ path: string; reason: string }> = []
   let total = 0
   const ranked = [...files].sort((a, b) => priority(a.path) - priority(b.path) || size(a) - size(b))
   for (const file of ranked) {
+    const pattern = excluded(file.path)
     if (file.binary) skipped.push({ path: file.path, reason: "binary" })
     else if (file.status === "deleted") skipped.push({ path: file.path, reason: "deleted" })
     else if (isIgnored(file.path)) skipped.push({ path: file.path, reason: "generated or lockfile" })
+    else if (pattern !== undefined) skipped.push({ path: file.path, reason: `excluded by ${pattern}` })
     else if (file.additions === 0) skipped.push({ path: file.path, reason: "no additions" })
     else if (size(file) > options.maxFileChars) skipped.push({ path: file.path, reason: "too large" })
     else if (total + size(file) > options.maxTotalChars) skipped.push({ path: file.path, reason: "diff budget" })

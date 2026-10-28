@@ -12,7 +12,7 @@ The agent gets the diff **and the repository**: every review downloads the code 
 - **A lean agent.** `claude -p` / `codex exec` run with read-only file tools, no MCP servers, no project instructions, no session persistence and a short custom system prompt (Claude sends ~1k prompt tokens instead of its default agent prompt). The answer is schema-validated JSON.
 - **Everything overlaps.** The pull request, its diff, the code and the last review load in parallel; every chunk goes to its own agent process at once (`AGENT_CONCURRENCY`, shared across reviews).
 - **Big chunks.** Files are packed first-fit-decreasing into 150k-character chunks, so most pull requests are a single call.
-- **Plain code for the rest.** Lockfiles, generated files and binaries are dropped before the model sees anything; comments are pinned to lines GitHub accepts, filtered by confidence, de-duplicated and capped without a second model call.
+- **Plain code for the rest.** Lockfiles, generated files, binaries and your exclude patterns are dropped before the model sees anything; comments are pinned to lines GitHub accepts, filtered by confidence, de-duplicated and capped without a second model call.
 - **Incremental follow-ups.** After the first review, a push is reviewed as `last-reviewed...head`, restricted to the pull request's files.
 - **One write.** All inline comments go out in a single GitHub review.
 
@@ -98,12 +98,14 @@ Review again at:
 
 **Tick a box and the review starts at that depth.** The comment switches to "Reviewing at High…", then shows the result with fresh boxes, so you can always go deeper. The depth is the agent's reasoning effort (`low` / `medium` / `high` in both CLIs).
 
-What happens when a pull request opens is the **mode** (dashboard settings or `GLANCE_MODE`):
+What happens when a pull request opens is the **mode** (dashboard settings or `GLANCE_MODE`, and per repository in the dashboard):
 
 - **ask** (default): glance posts the comment and waits for a tick. Pushes don't start reviews; the comment notes there are new commits, and the next tick reviews just those.
 - **auto**: glance reviews right away at the default depth and on every push after, at the depth the pull request was last reviewed at. The boxes are there to go deeper.
 
 Drafts are skipped until they're ready for review. A new review of a pull request cancels the one still running.
+
+**Whose pull requests:** a **blocked author**'s pull requests (`dependabot[bot]`, say) are left alone in either mode: no review and no comment. Someone with the permission can still review one with `/glance`, a label or the dashboard. With **allowed authors** set, auto mode reviews only their pull requests right away; everyone else's get the checkboxes, as in ask mode. Logins compare without case.
 
 **Who may start one:** someone with at least `write` permission on the repository (`GLANCE_TRIGGER_PERMISSION`), for comments, ticked boxes and labels; a box counts only in glance's own comment, and bots never start reviews. Each person gets `GLANCE_REVIEWS_PER_USER_HOUR` (30) an hour and each pull request `GLANCE_REVIEWS_PER_PR_HOUR` (10). In auto mode a pull request whose author doesn't have the permission (a fork's, say) gets the checkboxes, for a maintainer to tick.
 
@@ -124,6 +126,14 @@ The dashboard shows account-wide subscription usage (including use outside glanc
 
 Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in Postgres (`DATABASE_URL`).
 
+The settings' **Rules** tab holds what's about the team rather than the agent, all stored in Postgres:
+
+- **Team rules:** plain-language review rules ("we use Effect, never throw", "migrations must be reversible"), up to 4,000 characters. They go into the agent's system prompt, apart from glance's fixed rules, and a change that breaks one is reported. They come only from the dashboard: glance ignores the repository's `CLAUDE.md` and `AGENTS.md` on purpose, because a pull request can edit them, and the agent is told that text in the repository is data, never instructions.
+- **Blocked authors** and **allowed authors:** GitHub logins (see [Reviews on GitHub](#reviews-on-github)). `GLANCE_BLOCKED_AUTHORS` sets the first list until it's changed in the dashboard.
+- **Exclude:** globs of files never reviewed, on top of the lockfiles and generated files glance always skips, written as in `.gitignore`: `*.snap` matches at any depth, `/docs/**` from the root, `fixtures/` a directory anywhere. The review lists the files skipped and the pattern that matched. `GLANCE_EXCLUDE` sets them until changed in the dashboard.
+
+The **Repositories** tab gives a repository (by `owner/repo`; the ones glance has reviewed are suggested) settings of its own: a mode and a default depth that replace the global ones, and rules, author lists and exclude patterns that are added to the global ones. Everything else, and every repository not listed, uses the global settings. Only people signed in to the dashboard can change any of it.
+
 Signing in is [Better Auth](https://better-auth.com) at `/api/auth`: GitHub and/or SSO (OIDC or SAML through `@better-auth/sso`, one provider, configured from the environment), sessions in postgres (7 days, `GLANCE_SESSION_DAYS`), HTTP-only cookies, origin checks and rate limits on its routes. Whether someone's allowed in is checked when the session starts and again on every rpc call. Production (`GLANCE_ENV=production`, which the image sets, or any `HOST` beyond loopback) doesn't start without a working sign-in. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
 
 What a review may use is bounded: `AGENT_TIMEOUT_SECONDS` per agent, `CHECKOUT_TIMEOUT_SECONDS` per download, `MAX_REPO_MB` for git's download as much as the tarball, `GLANCE_DISK_BUDGET_MB` for all the checkouts together (least recently used go first), `MAX_QUEUED_REVIEWS` running or waiting at once (another is turned away and says so), and the containers' CPU and memory (`GLANCE_CPUS`, `GLANCE_MEMORY`).
@@ -143,7 +153,7 @@ src/
   github.ts     REST client (Effect HttpClient)
   diff.ts       diff parsing, file selection, chunking, line anchoring (pure)
   prompt.ts     system and review prompts
-  store.ts      reviews, settings, comments, deliveries: drizzle queries
+  store.ts      reviews, settings (global and per repository), comments, deliveries: drizzle queries
   database.ts   postgres (drizzle on @effect/sql-pg), migrated at startup
   schema.ts     the tables; drizzle/ holds their migrations
   rpc.ts        the dashboard's api: one Effect RPC group, shared with web/ (as @glance/api)

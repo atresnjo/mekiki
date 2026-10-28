@@ -89,3 +89,23 @@ test("the stream starts with the latest page; older reviews come a page at a tim
   expect(result.snapshot).toBe(PAGE)
   expect(result.older).toEqual([5, 4, 3, 2, 1])
 })
+
+test("repository settings: saved tidied, listed, removed; a bad name, login or overlong rules are refused", async () => {
+  const result = await run(false, (client) =>
+    Effect.gen(function* () {
+      const base = { mode: null, depth: null, rules: "", blockedAuthors: [], allowedAuthors: [], exclude: [] }
+      const saved = yield* client.SaveRepoSettings({ ...base, repo: " Acme/API ", mode: "auto", blockedAuthors: [" dependabot[bot] ", "dependabot[bot]", ""] })
+      const listed = yield* client.GetRepoSettings(undefined)
+      const badRepo = yield* client.SaveRepoSettings({ ...base, repo: "acme" }).pipe(Effect.flip)
+      const badLogin = yield* client.SaveRepoSettings({ ...base, repo: "acme/api", allowedAuthors: ["not a login"] }).pipe(Effect.flip)
+      const settings = yield* client.GetSettings(undefined)
+      const long = yield* client.SaveSettings({ ...settings, rules: "x".repeat(5000) }).pipe(Effect.flip)
+      yield* client.DeleteRepoSettings({ repo: "acme/api" })
+      return { saved, listed, badRepo, badLogin, long, after: yield* client.GetRepoSettings(undefined) }
+    }),
+  )
+  expect(result.saved).toMatchObject({ repo: "acme/api", mode: "auto", blockedAuthors: ["dependabot[bot]"] })
+  expect(result.listed).toEqual([result.saved])
+  expect([result.badRepo._tag, result.badLogin._tag, result.long._tag]).toEqual(["Invalid", "Invalid", "Invalid"])
+  expect(result.after).toEqual([])
+})

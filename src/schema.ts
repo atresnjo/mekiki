@@ -2,7 +2,7 @@
 // and the server applies what's new when it starts
 import { sql } from "drizzle-orm"
 import { bigint, boolean, check, index, integer, jsonb, primaryKey, snakeCase, text, timestamp } from "drizzle-orm/pg-core"
-import type { Review, Settings } from "./domain.ts"
+import type { RepoSettings, Review, Settings } from "./domain.ts"
 
 /** a review, whole, in data: repo, number and status are copied out for the lookups */
 export const reviews = snakeCase.table(
@@ -21,6 +21,12 @@ export const reviews = snakeCase.table(
 export const settings = snakeCase.table("settings", { id: integer().primaryKey(), data: jsonb().$type<Settings>().notNull() }, (t) => [
   check("settings_one_row", sql`${t.id} = 1`),
 ])
+
+/** a repository's own settings, on top of the one row: keyed by owner/repo, lowercase */
+export const repoSettings = snakeCase.table("repo_settings", {
+  repo: text().primaryKey(),
+  data: jsonb().$type<Omit<RepoSettings, "repo">>().notNull(),
+})
 
 /** glance's comment on each pull request */
 export const panels = snakeCase.table(

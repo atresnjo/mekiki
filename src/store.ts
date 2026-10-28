@@ -1,10 +1,10 @@
-// reviews, settings, panels and webhook deliveries in postgres. Infrastructure and persisted-data
+// reviews, settings (global and per repository), panels and webhook deliveries in postgres. Infrastructure and persisted-data
 // failures stay typed until the transport boundary decides how to report them.
 import { and, desc, eq, lt, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { Database } from "./database.ts"
-import { Review, Settings } from "./domain.ts"
-import { deliveries, panels, reviews, settings as settingsTable } from "./schema.ts"
+import { effective, RepoSettings, repoSettings as emptyRepoSettings, Review, Settings } from "./domain.ts"
+import { deliveries, panels, repoSettings as repoSettingsTable, reviews, settings as settingsTable } from "./schema.ts"
 
 export type NewReview = Omit<Review, "id">
 
@@ -21,6 +21,14 @@ export interface Interface {
   readonly interrupted: Effect.Effect<ReadonlyArray<Review>, StoreError>
   readonly settings: Effect.Effect<Settings, StoreError>
   readonly saveSettings: (settings: Settings) => Effect.Effect<Settings, StoreError>
+  /** what a review of owner/repo runs with: the global settings with the repository's on top */
+  readonly settingsFor: (repo: string) => Effect.Effect<Settings, StoreError>
+  /** every repository with settings of its own, by name */
+  readonly repoSettings: Effect.Effect<ReadonlyArray<RepoSettings>, StoreError>
+  readonly saveRepoSettings: (settings: RepoSettings) => Effect.Effect<RepoSettings, StoreError>
+  readonly deleteRepoSettings: (repo: string) => Effect.Effect<void, StoreError>
+  /** the repositories glance has reviewed, by name: what the dashboard suggests */
+  readonly reviewedRepos: Effect.Effect<ReadonlyArray<string>, StoreError>
   /** the id of glance's comment on a pull request */
   readonly panel: (repo: string, number: number) => Effect.Effect<Option.Option<number>, StoreError>
   readonly savePanel: (repo: string, number: number, commentId: number) => Effect.Effect<void, StoreError>
@@ -47,6 +55,7 @@ const query =
 
 const decodeReview = Schema.decodeUnknownEffect(Review)
 const decodeSettings = Schema.decodeUnknownEffect(Settings)
+const decodeRepoSettings = Schema.decodeUnknownEffect(RepoSettings)
 
 export const make = Effect.fn("Store.make")(function* (options: { readonly defaults: Settings }) {
   const db = yield* Database.Service
@@ -136,6 +145,51 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
     return next
   })
 
+  // a repository's settings saved by an older version: what's missing is the repository's nothing-of-its-own
+  const toRepoSettings = (row: typeof repoSettingsTable.$inferSelect) =>
+    decodeRepoSettings({ ...emptyRepoSettings(row.repo), ...row.data, repo: row.repo }).pipe(query("decodeRepoSettings"))
+
+  const settingsFor = Effect.fn("Store.settingsFor")(function* (repo: string) {
+    const [global, rows] = yield* Effect.all(
+      [settings, db.select().from(repoSettingsTable).where(eq(repoSettingsTable.repo, repo.toLowerCase())).pipe(query("settingsFor"))],
+      { concurrency: "unbounded" },
+    )
+    const [row] = rows
+    return effective(global, row ? yield* toRepoSettings(row) : undefined)
+  })
+
+  const repoSettings = db
+    .select()
+    .from(repoSettingsTable)
+    .orderBy(repoSettingsTable.repo)
+    .pipe(query("repoSettings"), Effect.flatMap(Effect.forEach(toRepoSettings)), Effect.withSpan("Store.repoSettings"))
+
+  const saveRepoSettings = Effect.fn("Store.saveRepoSettings")(function* (next: RepoSettings) {
+    const { repo: name, ...data } = next
+    const repo = name.toLowerCase()
+    yield* db
+      .insert(repoSettingsTable)
+      .values({ repo, data })
+      .onConflictDoUpdate({ target: repoSettingsTable.repo, set: { data } })
+      .pipe(query("saveRepoSettings"))
+    return { ...next, repo }
+  })
+
+  const deleteRepoSettings = Effect.fn("Store.deleteRepoSettings")(function* (repo: string) {
+    yield* db.delete(repoSettingsTable).where(eq(repoSettingsTable.repo, repo.toLowerCase())).pipe(query("deleteRepoSettings"))
+  })
+
+  const reviewedRepos = db
+    .selectDistinct({ repo: reviews.repo })
+    .from(reviews)
+    .orderBy(reviews.repo)
+    .limit(500)
+    .pipe(
+      query("reviewedRepos"),
+      Effect.map((rows) => rows.map((r) => r.repo)),
+      Effect.withSpan("Store.reviewedRepos"),
+    )
+
   const panel = Effect.fn("Store.panel")(function* (repo: string, number: number) {
     const [row] = yield* db
       .select({ commentId: panels.commentId })
@@ -179,6 +233,11 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
     interrupted,
     settings,
     saveSettings,
+    settingsFor,
+    repoSettings,
+    saveRepoSettings,
+    deleteRepoSettings,
+    reviewedRepos,
     panel,
     savePanel,
     claimDelivery,

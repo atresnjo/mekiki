@@ -118,6 +118,13 @@ export const AppConfig = Config.all({
     postComments: Config.Boolean("GLANCE_POST_COMMENTS").pipe(Config.withDefault(true)),
     maxFindings: Config.Int("GLANCE_MAX_FINDINGS").pipe(Config.withDefault(10)),
     minConfidence: Config.Finite("GLANCE_MIN_CONFIDENCE").pipe(Config.withDefault(0.6)),
+    /** the team's rules are written in the dashboard: several paragraphs don't fit an env var */
+    rules: Config.succeed(""),
+    /** github logins never reviewed on their own: dependabot[bot],renovate[bot] */
+    blockedAuthors: list("GLANCE_BLOCKED_AUTHORS"),
+    allowedAuthors: Config.succeed<ReadonlyArray<string>>([]),
+    /** globs never reviewed, on top of lockfiles and generated files: docs/**,*.snap */
+    exclude: list("GLANCE_EXCLUDE"),
   }) satisfies Config.Config<Settings>,
 })
 

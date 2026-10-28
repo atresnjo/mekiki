@@ -88,6 +88,7 @@ Then, on the test repository:
 - [ ] **Permissions:** from an account with read access only, comment `/glance high` and tick a box: nothing starts (the delivery's response in the app's _Advanced_ tab says why). A collaborator's `/glance high` starts a review and gets 👀.
 - [ ] **Labels:** add `glance:medium`: a review at medium.
 - [ ] **Auto mode** (dashboard settings): push a commit: reviewed incrementally. A pull request from a fork by a non-collaborator gets the boxes instead.
+- [ ] **Per repository:** give the test repository auto mode of its own while the global mode is ask: its pull requests are reviewed right away, another repository's get the boxes. Add a team rule ("never use `any`") and open a pull request that breaks it: the review flags it. Add an exclude pattern (`docs/**`): those files are listed as skipped with the pattern. Block a login and open a pull request as them: no review and no comment; `/glance` from a collaborator still reviews it.
 - [ ] **Duplicate delivery:** redeliver a delivery from the app's _Advanced_ tab: answered `duplicate: true`, nothing starts twice.
 - [ ] **Cancellation:** tick _High_ during a review: the running one is cancelled and the new one starts; close the pull request mid-review: cancelled.
 - [ ] **Restart recovery:** `docker compose restart glance` mid-review: after the restart it's reviewed again (trigger `resumed …`), once.
@@ -100,7 +101,7 @@ Write down the CLI versions and the commit that passed; those are what productio
 
 ## 7. Backups
 
-glance's state is the postgres database (reviews, settings, glance's comment ids, sessions). The checkouts are a cache and Codex's login can be redone, so the `glance-data` volume needs no backup.
+glance's state is the postgres database (reviews, settings and each repository's, glance's comment ids, sessions). The checkouts are a cache and Codex's login can be redone, so the `glance-data` volume needs no backup.
 
 `scripts/backup.sh` dumps the database (`pg_dump -Fc`), checks the dump reads, copies it off the machine with rclone (`GLANCE_BACKUP_RCLONE=remote:bucket/glance`) or restic (`RESTIC_REPOSITORY`, `RESTIC_PASSWORD`), keeps the newest 14 locally, and pings `GLANCE_BACKUP_PING_URL` when it's done. It fails when there's nowhere off the machine to put the dump. Put the settings in `backup.env` beside the checkout and run it daily:
 

@@ -1,0 +1,76 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "61b3288f-4a70-4348-b347-9bd2cd20050c",
+  "prevIds": ["e2cb9422-18a5-4489-81ad-a715358be7c9"],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": ["table", "public", "repo_settings"],
+      "writes": [
+        "s|tbl|public.repo_settings",
+        "n|tbl|public.repo_settings",
+        "e|tbl|public.repo_settings",
+        "n|rel|public.repo_settings",
+        "n|type|public.repo_settings",
+        "n|rel|public.repo_settings_pkey"
+      ],
+      "reads": ["n|sch|public"]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "repo_settings",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "repo_settings",
+        "name": "repo",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "repo_settings",
+        "name": "data",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "repo_settings",
+        "name": "repo_settings_pkey",
+        "columns": ["repo"],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    }
+  ]
+}
