@@ -1,6 +1,7 @@
 // the review pipeline. everything that can overlap does: the pull request, its diff and the last
 // review are fetched together, every chunk goes to its own agent process at once, and filtering is
-// plain code. a review is: ~3 github calls, one agent call per chunk, one github call to post
+// plain code. a review is: ~3 github calls, one agent call per chunk, one github call to post, and
+// alongside it a graphql read of the threads (plus one call per thread that's fixed)
 import { Clock, Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSub, Ref, Result, Schema, type Scope, Semaphore } from "effect"
 import { Agent } from "./agent.ts"
 import { Checkout } from "./checkout.ts"
@@ -22,6 +23,11 @@ export interface Limits {
   readonly concurrency: number
   /** reviews running or waiting at once: another is turned away, and says so */
   readonly maxQueued: number
+}
+
+export interface Options {
+  /** after a review, resolve glance's own threads whose problem is gone: see fixedThreads */
+  readonly resolveFixed: boolean
 }
 
 export interface StartOptions {
@@ -98,15 +104,76 @@ export const triage = (
   return kept
 }
 
+/**
+ * hidden in each inline comment: how glance knows its own threads again, and what each was about.
+ * the title is uri-encoded, so it can't close the html comment
+ */
+const FINDING = /<!-- glance:finding (\w+) (\S*) -->/
+/** hidden in glance's "fixed" reply: a thread it resolved once, and someone reopened, is left to them */
+const FIXED = "<!-- glance:fixed -->"
+
 export const commentBody = (f: Finding, agent: { readonly kind: AgentKind; readonly model: string; readonly depth: Depth }) =>
   [
     `${ICON[f.severity]} **${f.title}**`,
     f.body,
     f.suggestion === null ? "" : "```suggestion\n" + f.suggestion + "\n```",
     `<sub>${f.severity} · ${f.category} · ${Math.round(f.confidence * 100)}% · glance/${agent.kind}${agent.model ? ` ${agent.model}` : ""} ${agent.depth}</sub>`,
+    `<!-- glance:finding ${f.category} ${encodeURIComponent(f.title)} -->`,
   ]
     .filter(Boolean)
     .join("\n\n")
+
+export const fixedReply = (sha: string) => `✅ Fixed in ${sha.slice(0, 7)}: glance doesn't find this any more.\n\n${FIXED}`
+
+const decoded = (s: string) => {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
+const words = (s: string) =>
+  new Set(
+    normalize(s)
+      .split(" ")
+      .filter((w) => w.length > 2),
+  )
+
+/** two titles for one problem: half the shorter one's words are in the other */
+const similar = (a: string, b: string) => {
+  const x = words(a)
+  const y = words(b)
+  if (x.size === 0 || y.size === 0) return normalize(a) === normalize(b)
+  return [...x].filter((w) => y.has(w)).length / Math.min(x.size, y.size) >= 0.5
+}
+
+/**
+ * glance's threads whose problem looks fixed: unresolved, the code under them changed since (github
+ * says outdated), in a file this review read, and not found again near there. the agent's every
+ * finding counts, even one triage dropped (said before, unsure): only what it didn't say again is
+ * fixed. never a thread someone else started, nor one glance already resolved once
+ */
+export const fixedThreads = (
+  threads: ReadonlyArray<GitHub.ReviewThread>,
+  review: { readonly reviewed: ReadonlySet<string>; readonly findings: ReadonlyArray<Finding> },
+) =>
+  threads.filter((t) => {
+    const [first] = t.comments
+    const mark = first?.ours ? FINDING.exec(first.body) : null
+    if (!mark || t.resolved || !t.outdated || !review.reviewed.has(t.path)) return false
+    if (t.comments.some((c) => c.ours && c.body.includes(FIXED))) return false
+    const [, category, title = ""] = mark
+    // the code moved under it: near is wider for the same title than for the same kind of problem
+    const again = review.findings.some(
+      (f) =>
+        f.path === t.path &&
+        (t.line === null ||
+          (Math.abs(f.line - t.line) <= 20 && similar(f.title, decoded(title))) ||
+          (Math.abs(f.line - t.line) <= 3 && f.category === category)),
+    )
+    return !again
+  })
 
 export const reviewBody = (
   review: Review,
@@ -139,7 +206,7 @@ export const reviewBody = (
   return lines.join("\n\n")
 }
 
-export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
+export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { resolveFixed }: Options = { resolveFixed: true }) {
   const github = yield* GitHub.Service
   const agent = yield* Agent.Service
   const store = yield* Store.Service
@@ -157,6 +224,23 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
   yield* Effect.addFinalizer(() => Ref.set(stopping, true))
 
   const save = (id: number, patch: Partial<Omit<Review, "id">>) => store.update(id, patch).pipe(Effect.tap((r) => PubSub.publish(changes, r)))
+
+  // a thread that can't be read or resolved stays open: a warning, never the review's failure
+  const resolve = Effect.fn("Reviewer.resolve")(
+    function* (ref: PrRef, sha: string, review: Parameters<typeof fixedThreads>[1]) {
+      const fixed = fixedThreads(yield* github.reviewThreads(ref), review)
+      yield* Effect.forEach(
+        fixed,
+        (t) =>
+          github
+            .resolveThread(ref, t.id, fixedReply(sha))
+            .pipe(Effect.catchTag("GitHubError", (error) => Effect.logWarning(`couldn't resolve glance's thread on ${t.path}`, error))),
+        { concurrency: 4, discard: true },
+      )
+      if (fixed.length > 0) yield* Effect.logInfo(`resolved ${fixed.length} fixed thread${fixed.length === 1 ? "" : "s"}`)
+    },
+    Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't read the review threads to resolve fixed ones", error)),
+  )
 
   /** `reviewing` runs once the review is past its skip checks and about to call the agents */
   const pipeline = Effect.fn("Reviewer.pipeline")(function* (
@@ -260,18 +344,13 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
     const unreviewed = results.flatMap((r, i) => (Result.isFailure(r) ? (chunks[i] ?? []).map((f) => f.path) : []))
     if (reviews.length === 0) return yield* new Failed({ message: failures[0] ?? "the agent returned nothing" })
 
-    const findings = triage(
-      anchor(
-        reviews.flatMap((r) => r.findings),
-        Diff.commentable(selected),
-      ),
-      {
-        // a follow-up shouldn't repeat what the last review said; a fresh review of the same commit should
-        previous: incremental && Option.isSome(previous) ? previous.value.findings : [],
-        minConfidence: settings.minConfidence,
-        max: settings.maxFindings,
-      },
-    )
+    const found = reviews.flatMap((r) => r.findings)
+    const findings = triage(anchor(found, Diff.commentable(selected)), {
+      // a follow-up shouldn't repeat what the last review said; a fresh review of the same commit should
+      previous: incremental && Option.isSome(previous) ? previous.value.findings : [],
+      minConfidence: settings.minConfidence,
+      max: settings.maxFindings,
+    })
     const summary = reviews
       .map((r) => r.summary.trim())
       .filter(Boolean)
@@ -288,19 +367,24 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
       steps: [...steps],
     })
 
+    const posting = settings.postComments && !options.dryRun
+    const agentInfo = { kind: settings.agent, model: settings.model, depth: settings.depth }
     // a follow-up with nothing new stays quiet; a first review always says it looked, and a partial one says so
-    if (settings.postComments && !options.dryRun && (findings.length > 0 || !incremental || unreviewed.length > 0)) {
-      const agentInfo = { kind: settings.agent, model: settings.model, depth: settings.depth }
-      yield* timed(
-        "post",
-        github.postReview(ref, {
-          commitId: pr.head.sha,
-          body: reviewBody(review, skipped, { failure: failures[0], code: codeProblem }),
-          comments: findings.map((f) => ({ path: f.path, line: f.line, body: commentBody(f, agentInfo) })),
-        }),
-      )
-      yield* save(id, { posted: true })
-    }
+    const post =
+      posting && (findings.length > 0 || !incremental || unreviewed.length > 0)
+        ? timed(
+            "post",
+            github.postReview(ref, {
+              commitId: pr.head.sha,
+              body: reviewBody(review, skipped, { failure: failures[0], code: codeProblem }),
+              comments: findings.map((f) => ({ path: f.path, line: f.line, body: commentBody(f, agentInfo) })),
+            }),
+          ).pipe(Effect.andThen(save(id, { posted: true })))
+        : Effect.void
+    // alongside it, glance's threads whose problem is gone are resolved; a file that wasn't read proves nothing
+    const reviewed = new Set(selected.map((f) => f.path).filter((path) => !unreviewed.includes(path)))
+    const resolving = posting && resolveFixed ? timed("resolve", resolve(ref, pr.head.sha, { reviewed, findings: found })) : Effect.void
+    yield* Effect.all([post, resolving], { concurrency: "unbounded", discard: true })
 
     return yield* save(id, { status: "done", durationMs: (yield* Clock.currentTimeMillis) - started, steps: [...steps] })
   })
@@ -426,6 +510,6 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits) {
   return Service.of({ start, run, cancel, subscribe: PubSub.subscribe(changes) })
 })
 
-export const layer = (limits: Limits) => Layer.effect(Service, make(limits))
+export const layer = (limits: Limits, options?: Options) => Layer.effect(Service, make(limits, options))
 
 export * as Reviewer from "./reviewer.ts"

@@ -28,12 +28,14 @@ The agents never see any of these except their own login: they get an allowlist 
 
 Create it under the organization (Settings → Developer settings → GitHub Apps):
 
-- **Repository permissions:** Contents: read, Pull requests: read & write, Issues: read & write, Metadata: read (glance asks it who may trigger a review).
+- **Repository permissions:** Contents: read, Pull requests: read & write, Issues: read & write, Metadata: read (glance asks it who may trigger a review). Pull requests: read & write also covers resolving review threads and replying in them over GraphQL (`resolveReviewThread`, `addPullRequestReviewThreadReply`), which glance does to its own threads once their problem is fixed; nothing more is needed.
 - **Subscribe to events:** Pull request, Issue comment.
 - **Webhook URL:** `https://<domain>/api/webhooks/github`, secret `GITHUB_WEBHOOK_SECRET`.
 - Install it on the repositories glance should review, and set `GITHUB_APP_ID` and the private key.
 
 The same app can sign people in: under the app's settings, add the callback URL `https://<domain>/api/auth/callback/github`, generate a client secret, and set `GITHUB_CLIENT_ID` (the app's client id, not its app id) and `GITHUB_CLIENT_SECRET`. A separate OAuth app works too, with the same callback.
+
+**Fixed threads.** After each review it posts (not dry runs, not with posting off), glance reads the pull request's review threads over GraphQL (`https://api.github.com/graphql`, or `/api/graphql` beside an enterprise `GITHUB_API_URL`'s `/api/v3`, with the same token as the REST calls) and resolves the ones it started (a hidden `<!-- glance:finding … -->` mark in its comment, written by glance's own login) that are unresolved, outdated (the code under them changed), in a file the review read, and not found again near there. Each gets a "✅ Fixed in <sha>" reply and is resolved in one call. A thread glance resolved once and someone reopened is left alone. Failing to read or resolve threads logs a warning and never fails the review. `GLANCE_RESOLVE_FIXED=false` turns it off.
 
 Who may start a review from GitHub: someone with at least `GLANCE_TRIGGER_PERMISSION` (default `write`) on the repository, for `/glance` comments, ticked boxes (in glance's own comment only) and `glance:<depth>` labels. Bots never. Each person gets `GLANCE_REVIEWS_PER_USER_HOUR` reviews an hour, each pull request `GLANCE_REVIEWS_PER_PR_HOUR`. In auto mode, a pull request whose author lacks the permission (a fork's, say) gets the checkboxes instead of a review.
 
@@ -87,6 +89,7 @@ Then, on the test repository:
 - [ ] **Ask mode:** open a pull request: glance's comment appears with three boxes. Tick _Light_: it reviews, comments inline, the panel says what it found.
 - [ ] **Permissions:** from an account with read access only, comment `/glance high` and tick a box: nothing starts (the delivery's response in the app's _Advanced_ tab says why). A collaborator's `/glance high` starts a review and gets 👀.
 - [ ] **Labels:** add `glance:medium`: a review at medium.
+- [ ] **Fixed threads:** push a commit that fixes a problem glance commented on, and review again: its thread gets "✅ Fixed in …" and is resolved, while a thread on code the push didn't change stays open. Reopen the resolved one and review again: it stays open.
 - [ ] **Auto mode** (dashboard settings): push a commit: reviewed incrementally. A pull request from a fork by a non-collaborator gets the boxes instead.
 - [ ] **Per repository:** give the test repository auto mode of its own while the global mode is ask: its pull requests are reviewed right away, another repository's get the boxes. Add a team rule ("never use `any`") and open a pull request that breaks it: the review flags it. Add an exclude pattern (`docs/**`): those files are listed as skipped with the pattern. Block a login and open a pull request as them: no review and no comment; `/glance` from a collaborator still reviews it.
 - [ ] **Duplicate delivery:** redeliver a delivery from the app's _Advanced_ tab: answered `duplicate: true`, nothing starts twice.

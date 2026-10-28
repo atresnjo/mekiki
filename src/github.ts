@@ -24,6 +24,20 @@ export interface ReviewComment {
   readonly body: string
 }
 
+/** a review thread on a pull request, as graphql has it */
+export interface ReviewThread {
+  /** graphql node id: what resolving takes */
+  readonly id: string
+  readonly resolved: boolean
+  /** the code it was left on has changed since */
+  readonly outdated: boolean
+  readonly path: string
+  /** the line it's on, or (outdated) the line it was left on */
+  readonly line: number | null
+  /** oldest first, the first one started the thread. `ours`: written by whoever glance is on github */
+  readonly comments: ReadonlyArray<{ readonly body: string; readonly ours: boolean }>
+}
+
 export interface Interface {
   readonly pullRequest: (pr: PrRef) => Effect.Effect<PullRequest, GitHubError>
   /** the whole pull request as a unified diff */
@@ -46,6 +60,10 @@ export interface Interface {
   readonly acknowledge: (pr: PrRef, commentId: number) => Effect.Effect<void, GitHubError>
   /** someone's permission on the pull request's repository: none when they aren't a collaborator */
   readonly permission: (pr: PrRef, login: string) => Effect.Effect<Permission, GitHubError>
+  /** every review thread on the pull request: graphql, a page per hundred */
+  readonly reviewThreads: (pr: PrRef) => Effect.Effect<ReadonlyArray<ReviewThread>, GitHubError>
+  /** reply in a review thread and resolve it: one graphql call */
+  readonly resolveThread: (pr: PrRef, threadId: string, reply: string) => Effect.Effect<void, GitHubError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
@@ -68,6 +86,65 @@ const decodeInstallation = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema
 const decodePermission = Schema.decodeUnknownEffect(Schema.Struct({ permission: Schema.String, role_name: Schema.optional(Schema.String) }))
 const decodeAccessToken = Schema.decodeUnknownEffect(Schema.Struct({ token: Schema.String, expires_at: Schema.String }))
 
+/** a graphql answer: an error comes back with status 200, in `errors` */
+const GraphQL = <A extends Schema.Top>(data: A) =>
+  Schema.Struct({ data: Schema.optional(Schema.NullOr(data)), errors: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))) })
+
+const ThreadPage = Schema.Struct({
+  repository: Schema.NullOr(
+    Schema.Struct({
+      pullRequest: Schema.NullOr(
+        Schema.Struct({
+          reviewThreads: Schema.Struct({
+            pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean, endCursor: Schema.NullOr(Schema.String) }),
+            nodes: Schema.Array(
+              Schema.Struct({
+                id: Schema.String,
+                isResolved: Schema.Boolean,
+                isOutdated: Schema.Boolean,
+                path: Schema.String,
+                line: Schema.NullOr(Schema.Finite),
+                originalLine: Schema.NullOr(Schema.Finite),
+                comments: Schema.Struct({ nodes: Schema.Array(Schema.Struct({ body: Schema.String, viewerDidAuthor: Schema.Boolean })) }),
+              }),
+            ),
+          }),
+        }),
+      ),
+    }),
+  ),
+})
+const decodeThreadPage = Schema.decodeUnknownEffect(GraphQL(ThreadPage))
+const decodeMutation = Schema.decodeUnknownEffect(GraphQL(Schema.Unknown))
+
+// the first fifty comments: the one that started the thread, and whether glance already said it's fixed
+const THREADS = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line originalLine
+          comments(first: 50) { nodes { body viewerDidAuthor } }
+        }
+      }
+    }
+  }
+}`
+
+// the reply first, so the thread reads "fixed in …", then resolved
+const RESOLVE = `mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id } }
+  resolveReviewThread(input: { threadId: $thread }) { thread { isResolved } }
+}`
+
+/** a pull request with more threads than this is read only this far */
+const MAX_THREAD_PAGES = 10
+
+/** github.com's graphql is api.github.com/graphql; enterprise's is /api/graphql beside /api/v3 */
+export const graphqlUrl = (apiUrl: string) =>
+  /\/api\/v3\/?$/.test(apiUrl) ? apiUrl.replace(/\/api\/v3\/?$/, "/api/graphql") : `${apiUrl.replace(/\/$/, "")}/graphql`
+
 /** what an app proves it's the app with: a jwt signed with its private key, good for ten minutes */
 export const appJwt = (appId: string, privateKey: string, now: number) => {
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url")
@@ -88,13 +165,14 @@ const ghToken = Effect.gen(function* () {
 
 export const make = Effect.fn("GitHub.make")(function* (options: Options) {
   const fs = yield* FileSystem.FileSystem
-  const base = (yield* HttpClient.HttpClient).pipe(
-    HttpClient.mapRequest(
-      flow(HttpClientRequest.prependUrl(options.apiUrl), HttpClientRequest.setHeaders({ "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "glance" })),
-    ),
-  )
+  const http = yield* HttpClient.HttpClient
+  const headers = HttpClientRequest.setHeaders({ "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "glance" })
+  const base = http.pipe(HttpClient.mapRequest(flow(HttpClientRequest.prependUrl(options.apiUrl), headers)))
   // reads are idempotent: retry what failed for a moment. writes are never retried
   const reader = base.pipe(HttpClient.retryTransient({ schedule: Schedule.exponential("200 millis"), times: 2 }))
+  // graphql has one url, not under the rest api's on enterprise. its queries are reads, retried the same
+  const graph = http.pipe(HttpClient.mapRequest(flow(HttpClientRequest.setUrl(graphqlUrl(options.apiUrl)), headers)))
+  const graphReader = graph.pipe(HttpClient.retryTransient({ schedule: Schedule.exponential("200 millis"), times: 2 }))
 
   const execute = (client: HttpClient.HttpClient, operation: string, request: HttpClientRequest.HttpClientRequest) =>
     client.execute(request).pipe(
@@ -299,6 +377,70 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
     return PERMISSIONS.find((p) => p === body.role_name) ?? PERMISSIONS.find((p) => p === body.permission) ?? "none"
   })
 
+  /** a graphql query or mutation; an answer carrying `errors` is a failure, even one with some data */
+  const graphql = <A>(
+    client: HttpClient.HttpClient,
+    operation: string,
+    pr: PrRef,
+    query: string,
+    variables: Record<string, unknown>,
+    decode: (
+      u: unknown,
+    ) => Effect.Effect<{ readonly data?: A | null | undefined; readonly errors?: ReadonlyArray<{ readonly message: string }> | undefined }, Schema.SchemaError>,
+  ) =>
+    send(client, operation, pr, HttpClientRequest.post("").pipe(HttpClientRequest.acceptJson, HttpClientRequest.bodyJsonUnsafe({ query, variables }))).pipe(
+      Effect.flatMap((response) => json(operation, response, decode)),
+      Effect.flatMap(({ data, errors }) =>
+        errors && errors.length > 0
+          ? Effect.fail(
+              new GitHubError({
+                operation,
+                message: errors
+                  .map((e) => e.message)
+                  .join("; ")
+                  .slice(0, 1000),
+              }),
+            )
+          : data === null || data === undefined
+            ? Effect.fail(new GitHubError({ operation, message: "graphql answered without data" }))
+            : Effect.succeed(data),
+      ),
+    )
+
+  const reviewThreads = Effect.fn("GitHub.reviewThreads")(function* (pr: PrRef) {
+    const threads: Array<ReviewThread> = []
+    let after: string | null = null
+    for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+      const data: typeof ThreadPage.Type = yield* graphql(
+        graphReader,
+        "reviewThreads",
+        pr,
+        THREADS,
+        { owner: pr.owner, repo: pr.repo, number: pr.number, after },
+        decodeThreadPage,
+      )
+      const connection = data.repository?.pullRequest?.reviewThreads
+      if (!connection)
+        return yield* new GitHubError({ operation: "reviewThreads", status: 404, message: `no pull request ${pr.owner}/${pr.repo}#${pr.number}` })
+      for (const t of connection.nodes)
+        threads.push({
+          id: t.id,
+          resolved: t.isResolved,
+          outdated: t.isOutdated,
+          path: t.path,
+          line: t.line ?? t.originalLine,
+          comments: t.comments.nodes.map((c) => ({ body: c.body, ours: c.viewerDidAuthor })),
+        })
+      if (!connection.pageInfo.hasNextPage || connection.pageInfo.endCursor === null) break
+      after = connection.pageInfo.endCursor
+    }
+    return threads
+  })
+
+  const resolveThread = Effect.fn("GitHub.resolveThread")(function* (pr: PrRef, threadId: string, reply: string) {
+    yield* graphql(graph, "resolveThread", pr, RESOLVE, { thread: threadId, body: reply }, decodeMutation)
+  })
+
   // github.com's api lives on api.github.com; enterprise's under /api/v3 of the same host
   const webUrl = options.apiUrl === "https://api.github.com" ? "https://github.com" : options.apiUrl.replace(/\/api\/v3\/?$/, "")
   const gitRemote = (pr: PrRef) =>
@@ -307,7 +449,20 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       authorization: Redacted.make(`Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`),
     }))
 
-  return Service.of({ pullRequest, diff, compare, postReview, gitRemote, tarball, createComment, updateComment, acknowledge, permission })
+  return Service.of({
+    pullRequest,
+    diff,
+    compare,
+    postReview,
+    gitRemote,
+    tarball,
+    createComment,
+    updateComment,
+    acknowledge,
+    permission,
+    reviewThreads,
+    resolveThread,
+  })
 })
 
 export const layer = (options: Options) => Layer.effect(Service, make(options)).pipe(Layer.provide(FetchHttpClient.layer))
