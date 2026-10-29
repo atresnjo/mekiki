@@ -34,8 +34,19 @@ export interface ReviewThread {
   readonly path: string
   /** the line it's on, or (outdated) the line it was left on */
   readonly line: number | null
-  /** oldest first, the first one started the thread. `ours`: written by whoever glance is on github */
-  readonly comments: ReadonlyArray<{ readonly body: string; readonly ours: boolean }>
+  /** whether github lets glance resolve it: an app needs write access to the repository's contents */
+  readonly canResolve: boolean
+  /**
+   * oldest first, the first one started the thread. `ours`: written by whoever glance is on github;
+   * `canCollapse`: glance may hide it as outdated, which it can do to its own with less access than resolving takes
+   */
+  readonly comments: ReadonlyArray<{
+    readonly id: string
+    readonly body: string
+    readonly ours: boolean
+    readonly canCollapse: boolean
+    readonly collapsed: boolean
+  }>
 }
 
 export interface Interface {
@@ -64,6 +75,8 @@ export interface Interface {
   readonly reviewThreads: (pr: PrRef) => Effect.Effect<ReadonlyArray<ReviewThread>, GitHubError>
   /** reply in a review thread and resolve it: one graphql call */
   readonly resolveThread: (pr: PrRef, threadId: string, reply: string) => Effect.Effect<void, GitHubError>
+  /** reply in a review thread and hide the comment that started it as outdated: for when resolving isn't allowed */
+  readonly collapseThread: (pr: PrRef, threadId: string, commentId: string, reply: string) => Effect.Effect<void, GitHubError>
   /** the repositories glance can review, as owner/repo: the app's installations', else the token's. kept five minutes */
   readonly repositories: Effect.Effect<ReadonlyArray<string>, GitHubError>
 }
@@ -114,7 +127,18 @@ const ThreadPage = Schema.Struct({
                 path: Schema.String,
                 line: Schema.NullOr(Schema.Finite),
                 originalLine: Schema.NullOr(Schema.Finite),
-                comments: Schema.Struct({ nodes: Schema.Array(Schema.Struct({ body: Schema.String, viewerDidAuthor: Schema.Boolean })) }),
+                viewerCanResolve: Schema.Boolean,
+                comments: Schema.Struct({
+                  nodes: Schema.Array(
+                    Schema.Struct({
+                      id: Schema.String,
+                      body: Schema.String,
+                      viewerDidAuthor: Schema.Boolean,
+                      viewerCanMinimize: Schema.Boolean,
+                      isMinimized: Schema.Boolean,
+                    }),
+                  ),
+                }),
               }),
             ),
           }),
@@ -126,15 +150,16 @@ const ThreadPage = Schema.Struct({
 const decodeThreadPage = Schema.decodeUnknownEffect(GraphQL(ThreadPage))
 const decodeMutation = Schema.decodeUnknownEffect(GraphQL(Schema.Unknown))
 
-// the first fifty comments: the one that started the thread, and whether glance already said it's fixed
+// the first fifty comments: the one that started the thread, and whether glance already said it's fixed. and
+// what glance may do about it: resolve it, or hide its comment
 const THREADS = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved isOutdated path line originalLine
-          comments(first: 50) { nodes { body viewerDidAuthor } }
+          id isResolved isOutdated path line originalLine viewerCanResolve
+          comments(first: 50) { nodes { id body viewerDidAuthor viewerCanMinimize isMinimized } }
         }
       }
     }
@@ -145,6 +170,12 @@ const THREADS = `query($owner: String!, $repo: String!, $number: Int!, $after: S
 const RESOLVE = `mutation($thread: ID!, $body: String!) {
   addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id } }
   resolveReviewThread(input: { threadId: $thread }) { thread { isResolved } }
+}`
+
+// resolving takes write access to the contents; hiding its own comment doesn't. the thread still reads "fixed in …"
+const COLLAPSE = `mutation($thread: ID!, $comment: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id } }
+  minimizeComment(input: { subjectId: $comment, classifier: OUTDATED }) { minimizedComment { isMinimized } }
 }`
 
 /** a pull request with more threads than this is read only this far */
@@ -498,7 +529,14 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
           outdated: t.isOutdated,
           path: t.path,
           line: t.line ?? t.originalLine,
-          comments: t.comments.nodes.map((c) => ({ body: c.body, ours: c.viewerDidAuthor })),
+          canResolve: t.viewerCanResolve,
+          comments: t.comments.nodes.map((c) => ({
+            id: c.id,
+            body: c.body,
+            ours: c.viewerDidAuthor,
+            canCollapse: c.viewerCanMinimize,
+            collapsed: c.isMinimized,
+          })),
         })
       if (!connection.pageInfo.hasNextPage || connection.pageInfo.endCursor === null) break
       after = connection.pageInfo.endCursor
@@ -508,6 +546,10 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const resolveThread = Effect.fn("GitHub.resolveThread")(function* (pr: PrRef, threadId: string, reply: string) {
     yield* graphql(graph, "resolveThread", pr, RESOLVE, { thread: threadId, body: reply }, decodeMutation)
+  })
+
+  const collapseThread = Effect.fn("GitHub.collapseThread")(function* (pr: PrRef, threadId: string, commentId: string, reply: string) {
+    yield* graphql(graph, "collapseThread", pr, COLLAPSE, { thread: threadId, comment: commentId, body: reply }, decodeMutation)
   })
 
   // github.com's api lives on api.github.com; enterprise's under /api/v3 of the same host
@@ -531,6 +573,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
     permission,
     reviewThreads,
     resolveThread,
+    collapseThread,
     repositories: Cache.get(repositoryList, "all").pipe(Effect.withSpan("GitHub.repositories")),
   })
 })

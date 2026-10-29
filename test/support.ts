@@ -144,6 +144,7 @@ export const fakeGitHub = (
       permission: (_, login) => Effect.succeed(permissions[login] ?? "none"),
       reviewThreads: () => Effect.succeed([]),
       resolveThread: (_, id, reply) => Effect.sync(() => void resolved.push({ id, reply })),
+      collapseThread: (_, id, _comment, reply) => Effect.sync(() => void resolved.push({ id, reply })),
       repositories: Effect.succeed(["acme/api", "acme/web"]),
     }),
   )

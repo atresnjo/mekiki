@@ -6,7 +6,19 @@ import { Clock, Context, Deferred, Effect, Fiber, FiberMap, Layer, Option, PubSu
 import { Agent } from "./agent.ts"
 import { Checkout } from "./checkout.ts"
 import * as Diff from "./diff.ts"
-import { type AgentKind, type Depth, EFFORT, type Finding, type PrRef, prKey, type Review, type Settings, type Severity, type Step } from "./domain.ts"
+import {
+  type AgentKind,
+  type Depth,
+  EFFORT,
+  type Finding,
+  type PrRef,
+  prKey,
+  type Review,
+  type Settings,
+  type Severity,
+  type Step,
+  type GitHubError,
+} from "./domain.ts"
 import { GitHub } from "./github.ts"
 import { Panel } from "./panel.ts"
 import { reviewPrompt, system } from "./prompt.ts"
@@ -174,7 +186,7 @@ export const fixedThreads = (
   threads.filter((t) => {
     const [first] = t.comments
     const mark = first?.ours ? FINDING.exec(first.body) : null
-    if (!mark || t.resolved || !t.outdated || !review.reviewed.has(t.path)) return false
+    if (!mark || t.resolved || first?.collapsed || !t.outdated || !review.reviewed.has(t.path)) return false
     if (t.comments.some((c) => c.ours && c.body.includes(FIXED))) return false
     const [, category, title = ""] = mark
     // the code moved under it: near is wider for the same title than for the same kind of problem
@@ -238,19 +250,33 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
 
   const save = (id: number, patch: Partial<Omit<Review, "id">>) => store.update(id, patch).pipe(Effect.tap((r) => PubSub.publish(changes, r)))
 
-  // a thread that can't be read or resolved stays open: a warning, never the review's failure
+  // a fixed thread is resolved where github allows it, and its comment hidden as outdated where it doesn't (an
+  // app without write access to the contents). one that can't be read or closed stays open: a warning, never the review's failure
   const resolve = Effect.fn("Reviewer.resolve")(
     function* (ref: PrRef, sha: string, review: Parameters<typeof fixedThreads>[1]) {
       const fixed = fixedThreads(yield* github.reviewThreads(ref), review)
-      yield* Effect.forEach(
+      const closed = yield* Effect.forEach(
         fixed,
-        (t) =>
-          github
-            .resolveThread(ref, t.id, fixedReply(sha))
-            .pipe(Effect.catchTag("GitHubError", (error) => Effect.logWarning(`couldn't resolve glance's thread on ${t.path}`, error))),
-        { concurrency: 4, discard: true },
+        (t) => {
+          const [first] = t.comments
+          const close: Effect.Effect<"resolved" | "collapsed" | undefined, GitHubError> = t.canResolve
+            ? github.resolveThread(ref, t.id, fixedReply(sha)).pipe(Effect.as("resolved" as const))
+            : first?.canCollapse
+              ? github.collapseThread(ref, t.id, first.id, fixedReply(sha)).pipe(Effect.as("collapsed" as const))
+              : Effect.succeed(undefined)
+          return close.pipe(
+            Effect.catchTag("GitHubError", (error) => Effect.logWarning(`couldn't close glance's thread on ${t.path}`, error).pipe(Effect.as(undefined))),
+          )
+        },
+        { concurrency: 4 },
       )
-      if (fixed.length > 0) yield* Effect.logInfo(`resolved ${fixed.length} fixed thread${fixed.length === 1 ? "" : "s"}`)
+      const count = (how: string) => closed.filter((c) => c === how).length
+      const [resolved, collapsed] = [count("resolved"), count("collapsed")]
+      if (resolved > 0) yield* Effect.logInfo(`resolved ${resolved} fixed thread${resolved === 1 ? "" : "s"}`)
+      if (collapsed > 0)
+        yield* Effect.logInfo(
+          `hid ${collapsed} fixed comment${collapsed === 1 ? "" : "s"} as outdated: resolving threads takes the github app's Contents: read and write`,
+        )
     },
     Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't read the review threads to resolve fixed ones", error)),
   )

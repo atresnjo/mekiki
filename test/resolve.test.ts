@@ -23,6 +23,16 @@ const finding = (overrides: Partial<Finding>): Finding => ({
 
 const agentInfo = { kind: "claude", model: "", depth: "light" } as const
 
+/** a comment in a thread: `ours` when glance's login wrote it */
+const said = (body: string, ours: boolean, extra: Partial<ReviewThread["comments"][number]> = {}) => ({
+  id: `c-${body.length}`,
+  body,
+  ours,
+  canCollapse: ours,
+  collapsed: false,
+  ...extra,
+})
+
 /** a thread glance started on `f`, outdated and open unless said otherwise */
 const thread = (id: string, f: Finding, overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id,
@@ -30,7 +40,8 @@ const thread = (id: string, f: Finding, overrides: Partial<ReviewThread> = {}): 
   outdated: true,
   path: f.path,
   line: f.line,
-  comments: [{ body: commentBody(f, agentInfo), ours: true }],
+  canResolve: true,
+  comments: [said(commentBody(f, agentInfo), true)],
   ...overrides,
 })
 
@@ -53,15 +64,13 @@ describe("which threads are fixed", () => {
     expect(fixedThreads(threads, { reviewed, findings: [finding({ line: 22, title: "Unescaped user input", category: "security" })] })).toEqual([])
   })
 
-  test("not outdated, already resolved, in a file this review didn't read, or reopened after glance resolved it: stays as it is", () => {
+  test("not outdated, already resolved or hidden, in a file this review didn't read, or reopened after glance resolved it: stays as it is", () => {
     const f = finding({})
     const reopened = thread("t6", f, {
-      comments: [
-        { body: commentBody(f, agentInfo), ours: true },
-        { body: fixedReply("abcdef1234"), ours: true },
-      ],
+      comments: [said(commentBody(f, agentInfo), true), said(fixedReply("abcdef1234"), true)],
     })
-    const threads = [thread("t3", f, { outdated: false }), thread("t4", f, { resolved: true }), thread("t5", finding({ path: "src/b.ts" })), reopened]
+    const hidden = thread("t7", f, { comments: [said(commentBody(f, agentInfo), true, { collapsed: true })] })
+    const threads = [thread("t3", f, { outdated: false }), thread("t4", f, { resolved: true }), thread("t5", finding({ path: "src/b.ts" })), reopened, hidden]
     expect(fixedThreads(threads, { reviewed, findings: [] })).toEqual([])
   })
 
@@ -69,15 +78,12 @@ describe("which threads are fixed", () => {
     const f = finding({})
     const threads = [
       // someone else's, even one copying glance's mark
-      thread("theirs", f, { comments: [{ body: commentBody(f, agentInfo), ours: false }] }),
+      thread("theirs", f, { comments: [said(commentBody(f, agentInfo), false)] }),
       // glance's login (a personal token) writing by hand: no mark
-      thread("by hand", f, { comments: [{ body: "please rename this", ours: true }] }),
+      thread("by hand", f, { comments: [said("please rename this", true)] }),
       // glance only replied in it
       thread("replied", f, {
-        comments: [
-          { body: "looks wrong", ours: false },
-          { body: commentBody(f, agentInfo), ours: true },
-        ],
+        comments: [said("looks wrong", false), said(commentBody(f, agentInfo), true)],
       }),
     ]
     expect(fixedThreads(threads, { reviewed, findings: [] })).toEqual([])
@@ -102,7 +108,7 @@ const SHA = "def4567890abcdef"
 const fixed = finding({})
 const sql = finding({ line: 20, title: "SQL injection in query", category: "security" })
 const leak = finding({ line: 40, title: "Leaks the file handle", category: "reliability" })
-const glance = (f: Finding) => ({ body: commentBody(f, agentInfo), viewerDidAuthor: true })
+const glance = (f: Finding) => ({ id: `c-${f.line}`, body: commentBody(f, agentInfo), viewerDidAuthor: true, viewerCanMinimize: true, isMinimized: false })
 const node = (id: string, f: Finding, overrides: Record<string, unknown> = {}) => ({
   id,
   isResolved: false,
@@ -110,6 +116,7 @@ const node = (id: string, f: Finding, overrides: Record<string, unknown> = {}) =
   path: f.path,
   line: null,
   originalLine: f.line,
+  viewerCanResolve: true,
   comments: { nodes: [glance(f)] },
   ...overrides,
 })
@@ -119,8 +126,8 @@ const PAGES = [
     node("fixed", fixed),
     node("found-again", sql),
     node("current", leak, { isOutdated: false, line: 40 }),
-    node("theirs", fixed, { comments: { nodes: [{ body: commentBody(fixed, agentInfo), viewerDidAuthor: false }] } }),
-    node("by-hand", fixed, { comments: { nodes: [{ body: "please rename this", viewerDidAuthor: true }] } }),
+    node("theirs", fixed, { comments: { nodes: [{ ...glance(fixed), viewerDidAuthor: false, viewerCanMinimize: false }] } }),
+    node("by-hand", fixed, { comments: { nodes: [{ ...glance(fixed), body: "please rename this" }] } }),
   ],
   [node("done", fixed, { isResolved: true }), node("fixed-too", leak)],
 ]
@@ -134,6 +141,12 @@ interface Request {
 const requests: Array<Request> = []
 const graphql = () => requests.filter((r) => r.path === "/api/graphql")
 const resolutions = () => graphql().filter((r) => r.body.query?.includes("resolveReviewThread"))
+const collapses = () => graphql().filter((r) => r.body.query?.includes("minimizeComment"))
+// pull request 4: glance's app may reply but not resolve (no write access to the contents)
+const LOCKED = [
+  node("may-hide", fixed, { viewerCanResolve: false }),
+  node("may-not", leak, { viewerCanResolve: false, comments: { nodes: [{ ...glance(leak), viewerCanMinimize: false }] } }),
+]
 
 const server = Bun.serve({
   port: 0,
@@ -144,6 +157,9 @@ const server = Bun.serve({
     requests.push({ method: request.method, path, authorization: request.headers.get("authorization"), body })
     if (path === "/api/graphql") {
       if (body.query.includes("resolveReviewThread")) return Response.json({ data: { resolveReviewThread: { thread: { isResolved: true } } } })
+      if (body.query.includes("minimizeComment")) return Response.json({ data: { minimizeComment: { minimizedComment: { isMinimized: true } } } })
+      if (body.variables.number === 4)
+        return Response.json({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: LOCKED } } } } })
       // pull request 3: graphql is down (rate limited), the way it says so: status 200, `errors`
       if (body.variables.number === 3) return Response.json({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] })
       const page = body.variables.after === null ? 0 : 1
@@ -235,5 +251,15 @@ describe("after a review", () => {
     expect(done.error).toBeNull()
     expect(graphql()).toHaveLength(1)
     expect(resolutions()).toEqual([])
+  })
+
+  test("where github won't let glance resolve, it hides its own fixed comment as outdated; where it can't do that either, it leaves the thread be", async () => {
+    const done = await review(4, { trigger: "manual" })
+    expect(done.status).toBe("done")
+    expect(resolutions()).toEqual([])
+    expect(collapses().map((r) => [r.body.variables?.thread, r.body.variables?.comment])).toEqual([["may-hide", `c-${fixed.line}`]])
+    expect(collapses()[0]?.body.query).toContain("classifier: OUTDATED")
+    // no "fixed" reply on a thread glance can't close
+    expect(graphql().filter((r) => r.body.variables?.thread === "may-not")).toEqual([])
   })
 })
