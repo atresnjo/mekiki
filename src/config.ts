@@ -1,6 +1,8 @@
 import { resolve } from "node:path"
-import { Config, Redacted } from "effect"
+import { Config, Option, Redacted, Schema } from "effect"
+import { PROVIDERS } from "./agent.ts"
 import type { Settings } from "./domain.ts"
+import { PRICES, Prices } from "./prices.ts"
 
 /** a comma separated list, empty entries dropped */
 const list = (name: string) =>
@@ -100,6 +102,30 @@ export const AppConfig = Config.all({
     codexBin: Config.String("CODEX_BIN").pipe(Config.withDefault("codex")),
     // reading the code takes the agent a few turns: more room than a single answer
     timeout: Config.Int("AGENT_TIMEOUT_SECONDS").pipe(Config.withDefault(600)),
+    /**
+     * the api agent: a model on an API key, billed per token, for teams and companies (the CLIs'
+     * subscription logins are for one person's own use). the key is the provider's usual variable,
+     * read here and handed to nobody else: the CLIs' environment never has it
+     */
+    api: Config.all({
+      provider: Config.option(Config.Literals(PROVIDERS, "GLANCE_API_PROVIDER")),
+      model: Config.String("GLANCE_API_MODEL").pipe(Config.withDefault("")),
+      /** more models the dashboard offers: gpt-6-luna,gpt-6-sol */
+      models: list("GLANCE_API_MODELS"),
+      /** an openai-compatible gateway: openrouter, litellm, azure */
+      baseUrl: Config.option(Config.String("GLANCE_API_BASE_URL")),
+      maxSteps: Config.Int("GLANCE_API_MAX_STEPS").pipe(Config.withDefault(30)),
+      keys: Config.all({
+        openai: Config.option(Config.Redacted("OPENAI_API_KEY")),
+        anthropic: Config.option(Config.Redacted("ANTHROPIC_API_KEY")),
+        google: Config.option(Config.Redacted("GOOGLE_GENERATIVE_AI_API_KEY")),
+      }),
+    }).pipe(Config.map(({ keys, ...api }) => ({ ...api, key: Option.flatMap(api.provider, (provider) => keys[provider]) }))),
+    /** dollars per million tokens, on top of prices.ts: `{"my-model": {"input": 1, "cachedInput": 0.1, "output": 5}}` */
+    prices: Config.schema(Schema.fromJsonString(Prices), "GLANCE_PRICES").pipe(
+      Config.withDefault({}),
+      Config.map((extra): Prices => ({ ...PRICES, ...extra })),
+    ),
   }),
   limits: Config.all({
     maxDiffChars: Config.Int("MAX_DIFF_CHARS").pipe(Config.withDefault(400_000)),
@@ -118,7 +144,7 @@ export const AppConfig = Config.all({
   }),
   /** settings until they're changed in the dashboard */
   defaults: Config.all({
-    agent: Config.Literals(["claude", "codex"], "GLANCE_AGENT").pipe(Config.withDefault("claude" as const)),
+    agent: Config.Literals(["claude", "codex", "api"], "GLANCE_AGENT").pipe(Config.withDefault("claude" as const)),
     model: Config.String("GLANCE_MODEL").pipe(Config.withDefault("")),
     depth: Config.Literals(["light", "medium", "high"], "GLANCE_DEPTH").pipe(Config.withDefault("light" as const)),
     mode: Config.Literals(["ask", "auto"], "GLANCE_MODE").pipe(Config.withDefault("ask" as const)),

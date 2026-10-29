@@ -20,8 +20,17 @@ import { UsageMenu } from "./usage.tsx"
 import { DepthPicker, report } from "./ui.tsx"
 
 const AGENTS = [
-  { key: "claude", name: "Claude Code", login: "claude" },
-  { key: "codex", name: "Codex", login: "codex login" },
+  { key: "claude", name: "Claude Code", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "claude", " where glance runs."] },
+  { key: "codex", name: "Codex", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "codex login", " where glance runs."] },
+  // opt in: one not set up isn't a problem, only a choice not made
+  {
+    key: "api",
+    name: "API key",
+    ready: "Key set",
+    down: "Not set up",
+    fix: ["Set ", "GLANCE_API_PROVIDER", ", its model and key on the server."],
+    optional: true,
+  },
 ] as const
 
 /** a status light: ready, or something to look at (pulsing while it's still trying) */
@@ -34,10 +43,10 @@ const Dot = ({ ok, pulse }: { ok: boolean; pulse?: boolean }) => (
  * and the detail is a click away
  */
 const Health = ({ status, live }: { status: Status | undefined; live: boolean }) => {
-  const down = status ? AGENTS.filter((a) => !status.agents[a.key]) : []
+  const down = status ? AGENTS.filter((a) => !status.agents[a.key] && !("optional" in a)) : []
   const problems = [...down.map((a) => `${a.name} logged out`), ...(live ? [] : ["Reconnecting…"])]
   const ok = problems.length === 0
-  const ready = AGENTS.length - down.length
+  const ready = status ? AGENTS.filter((a) => status.agents[a.key]).length : 0
   const long = !status ? "Checking…" : ok ? `${ready} agents ready` : problems.join(" · ")
   const short = ok ? "Ready" : `${problems.length} issue${problems.length === 1 ? "" : "s"}`
   return (
@@ -57,7 +66,7 @@ const Health = ({ status, live }: { status: Status | undefined; live: boolean })
         <Icon icon={ArrowDown01Icon} size={12} />
       </Popover.Trigger>
       <Popover.Content align="end" className="w-72 p-1 text-[13px]">
-        <div className="px-2.5 pt-2 pb-1.5 text-[11px] font-medium text-kumo-inactive">Agents on this machine</div>
+        <div className="px-2.5 pt-2 pb-1.5 text-[11px] font-medium text-kumo-inactive">Agents</div>
         {AGENTS.map((agent) => {
           const version = status?.agents[agent.key]
           return (
@@ -66,12 +75,14 @@ const Health = ({ status, live }: { status: Status | undefined; live: boolean })
                 <Dot ok={Boolean(version)} />
                 <span className="text-kumo-default">{agent.name}</span>
                 <span className="ml-auto truncate pl-2 text-xs text-kumo-subtle" title={version ?? undefined}>
-                  {version ? "Logged in" : "Not installed or logged out"}
+                  {version ? agent.ready : agent.down}
                 </span>
               </div>
               {status && !version && (
                 <p className="mx-2.5 mb-1.5 ml-[25px] text-xs text-kumo-subtle">
-                  Run <code className="rounded bg-kumo-recessed px-1 font-mono text-[11.5px] text-kumo-default">{agent.login}</code> where glance runs.
+                  {agent.fix[0]}
+                  <code className="rounded bg-kumo-recessed px-1 font-mono text-[11.5px] text-kumo-default">{agent.fix[1]}</code>
+                  {agent.fix[2]}
                 </p>
               )}
             </div>

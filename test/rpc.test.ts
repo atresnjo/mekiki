@@ -32,7 +32,7 @@ test("with signing in on, a call without a session is refused, and one with it g
   )
   expect(result.refused._tag).toBe("Unauthorized")
   expect(result.status).toEqual({
-    agents: { claude: "claude 1.0", codex: null },
+    agents: { claude: "claude 1.0", codex: null, api: null },
     webhook: false,
     auth: true,
     user: { id: "u1", name: "Alice", email: "alice@acme.com", image: null },

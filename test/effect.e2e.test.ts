@@ -79,7 +79,7 @@ if (prompt.includes("# Pull request: hold")) {
 }
 if (prompt.includes("### broken.ts")) { console.error("fixture chunk failed"); process.exit(1) }
 if (!(await Bun.file("good.ts").exists())) { console.error("checkout missing"); process.exit(2) }
-console.log(JSON.stringify({ structured_output: { summary: "Read the actual code.", findings: [] } }))
+console.log(JSON.stringify({ structured_output: { summary: "Read the actual code.", findings: [] }, usage: { input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 50 }, total_cost_usd: 0.002 }))
 `,
   )
   chmodSync(fixture, 0o755)
@@ -110,6 +110,8 @@ console.log(JSON.stringify({ structured_output: { summary: "Read the actual code
         expect(whole.status).toBe("done")
         expect(whole.posted).toBe(true)
         expect(whole.error).toBeNull()
+        // what the cli reported it spent is kept with the review
+        expect(whole.usage).toEqual({ calls: 1, inputTokens: 1000, cachedInputTokens: 900, outputTokens: 50, costUsd: 0.002 })
         const partial = yield* reviewer.run(pr(2), { trigger: "e2e" })
         expect(partial.status).toBe("done")
         expect(partial.unreviewed).toEqual(["broken.ts"])

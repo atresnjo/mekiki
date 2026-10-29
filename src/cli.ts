@@ -1,4 +1,4 @@
-// bun review <pr-url> [--post] [--agent claude|codex] [--model name] [--depth light|medium|high] [--json]
+// bun review <pr-url> [--post] [--agent claude|codex|api] [--model name] [--depth light|medium|high] [--json]
 // reviews once and prints the findings. posts nothing unless --post
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Option, Schema } from "effect"
@@ -22,7 +22,7 @@ const review = Command.make(
       ),
     ),
     post: Flag.Boolean("post").pipe(Flag.withDefault(false), Flag.withDescription("post the review on github")),
-    agent: Flag.Literals("agent", ["claude", "codex"]).pipe(Flag.optional),
+    agent: Flag.Literals("agent", ["claude", "codex", "api"]).pipe(Flag.optional),
     model: Flag.String("model").pipe(Flag.optional),
     depth: Flag.Literals("depth", ["light", "medium", "high"]).pipe(Flag.optional),
     json: Flag.Boolean("json").pipe(Flag.withDefault(false), Flag.withDescription("print the whole review as json")),
@@ -45,6 +45,10 @@ const review = Command.make(
         `\n${review.repo}#${review.number} ${review.title}\n${review.status} in ${seconds}s · ${review.agent}${review.model ? ` ${review.model}` : ""} · ${review.depth} · ${review.files} files, ${review.chunks} chunk(s)`,
       )
       yield* Console.log(review.steps.map((s) => `  ${s.name.padEnd(14)} ${(s.ms / 1000).toFixed(1)}s`).join("\n"))
+      if (review.usage)
+        yield* Console.log(
+          `  ${review.usage.inputTokens} in (${review.usage.cachedInputTokens} cached), ${review.usage.outputTokens} out${review.usage.costUsd === null ? "" : ` · ≈ $${review.usage.costUsd.toFixed(2)}, an estimate`}`,
+        )
       if (review.error) yield* Console.error(`\n${review.error}`)
       if (review.summary) yield* Console.log(`\n${review.summary}`)
       for (const f of review.findings) yield* Console.log(`\n[${f.severity}] ${f.path}:${f.line}  ${f.title}\n  ${f.body.replaceAll("\n", "\n  ")}`)

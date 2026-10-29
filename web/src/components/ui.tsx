@@ -36,7 +36,15 @@ export const report = <A,>(exit: Exit.Exit<A, Failure>, done?: string) => {
   return exit
 }
 
-export const agentName = (r: Pick<Review, "agent" | "model">) => `${r.agent === "claude" ? "Claude Code" : "Codex"}${r.model ? ` · ${r.model}` : ""}`
+export const AGENT_NAMES: Record<Review["agent"], string> = { claude: "Claude Code", codex: "Codex", api: "API" }
+
+export const agentName = (r: Pick<Review, "agent" | "model">) => `${AGENT_NAMES[r.agent]}${r.model ? ` · ${r.model}` : ""}`
+
+/** 12345 tokens: "12.3k" */
+export const tokenCount = (n: number) => (n < 1000 ? String(n) : n < 1_000_000 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(2)}M`)
+
+/** dollars, to the cent, a fraction of one when that's all it is */
+export const dollars = (usd: number) => (usd > 0 && usd < 0.01 ? "< $0.01" : `$${usd.toFixed(2)}`)
 
 export const SEVERITY: Record<Severity, { variant: "red" | "orange" | "warning" | "blue"; label: string }> = {
   critical: { variant: "red", label: "Critical" },

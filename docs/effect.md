@@ -50,6 +50,12 @@ callbacks enter a scoped `FiberSet` runtime. The authorization workflow and GitH
 membership requests use Effect, with status handling, schema decoding and timeouts.
 Browser-facing Better Auth calls remain at the browser framework boundary.
 
+The AI SDK (the `api` agent) is a Promise library too. One `generateText` call is one
+`Effect.tryPromise` whose `AbortSignal` the fiber owns: an interrupted or timed-out review
+aborts the request. Its failures map to the same `AgentError` as the CLIs'. Its tools call
+back into Effect with `Effect.runPromiseWith` on the review's captured context, so their spans
+nest under `Agent.api` and the tool's own abort signal stops a search mid-walk.
+
 ## Verification
 
 ```sh

@@ -78,6 +78,7 @@ export const HandlersLive = (config: AppConfig) =>
           {
             claude: agent.models("claude").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
             codex: agent.models("codex").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
+            api: agent.models("api").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
           },
           { concurrency: "unbounded" },
         ),

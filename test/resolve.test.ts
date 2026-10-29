@@ -190,7 +190,10 @@ const agent = Layer.effect(
     Agent.Service.of({
       ...fake,
       review: () =>
-        Effect.succeed({ summary: "Looked.", findings: [finding({ line: 24, title: "SQL injection in the query builder", category: "security" })] }),
+        Effect.succeed({
+          review: { summary: "Looked.", findings: [finding({ line: 24, title: "SQL injection in the query builder", category: "security" })] },
+          usage: undefined,
+        }),
     }),
   ),
 ).pipe(Layer.provide(fakeAgent))

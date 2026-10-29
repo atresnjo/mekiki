@@ -12,7 +12,7 @@ import { Icon } from "./icon.tsx"
 import { useAtomSet } from "@effect/atom-react"
 import type { ReactNode } from "react"
 import { cancelReview, type Finding, type Review, retryReview } from "../lib/glance.ts"
-import { agentName, ago, DEPTHS, depthLabel, elapsed, report, seconds, SEVERITY, StatusBadge } from "./ui.tsx"
+import { agentName, ago, DEPTHS, depthLabel, dollars, elapsed, report, seconds, SEVERITY, StatusBadge, tokenCount } from "./ui.tsx"
 
 const Column = ({ label, children }: { label: string; children: ReactNode }) => (
   <div className="flex min-w-0 flex-col gap-1.5">
@@ -50,6 +50,23 @@ const Timeline = ({ review, now }: { review: Review; now: number }) => {
       </div>
     </div>
   )
+}
+
+/**
+ * what the review's agent calls spent: "≈ $0.14", always an estimate. a subscription cli isn't billed
+ * per token, so there it's what the same tokens would cost on an API key
+ */
+const cost = (review: Review): { label: string; value: string; note?: string; title?: string } => {
+  const usage = review.usage
+  if (!usage) return { label: "Cost", value: "—" }
+  const tokens = `${tokenCount(usage.inputTokens)} in · ${tokenCount(usage.outputTokens)} out`
+  const subscription = review.agent !== "api"
+  return {
+    label: subscription ? "Cost at API prices" : "Cost",
+    value: usage.costUsd === null ? "—" : `≈ ${dollars(usage.costUsd)}`,
+    note: usage.costUsd === null ? `${tokens} · no price for this model` : `${tokens} · estimate`,
+    title: `${usage.inputTokens} input tokens (${usage.cachedInputTokens} cached), ${usage.outputTokens} output, over ${usage.calls} model call${usage.calls === 1 ? "" : "s"}. An estimate from the price table${subscription ? "; the subscription isn't billed per token" : ""}.`,
+  }
 }
 
 const FindingRow = ({ finding, url }: { finding: Finding; url: string }) => {
@@ -175,17 +192,19 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
         </LayerCard.Primary>
       </LayerCard>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         {[
-          ["Files reviewed", review.files > 0 ? String(review.files) : "—"],
-          ["Files skipped", String(review.skippedFiles)],
-          ["Agent calls", review.chunks > 0 ? String(review.chunks) : "—"],
-          ["Scope", review.incremental ? "New commits" : "Whole pull request"],
-        ].map(([label, value]) => (
+          { label: "Files reviewed", value: review.files > 0 ? String(review.files) : "—" },
+          { label: "Files skipped", value: String(review.skippedFiles) },
+          { label: "Agent calls", value: review.chunks > 0 ? String(review.chunks) : "—" },
+          { label: "Scope", value: review.incremental ? "New commits" : "Whole pull request" },
+          cost(review),
+        ].map(({ label, value, note, title }) => (
           <LayerCard key={label}>
-            <LayerCard.Primary className="flex flex-col gap-1">
+            <LayerCard.Primary className="flex flex-col gap-1" title={title}>
               <Text variant="secondary">{label}</Text>
               <span className="tabular text-2xl font-semibold text-kumo-strong">{value}</span>
+              {note && <span className="tabular text-xs text-kumo-subtle">{note}</span>}
             </LayerCard.Primary>
           </LayerCard>
         ))}

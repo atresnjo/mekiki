@@ -47,6 +47,9 @@ import {
 import { type Glyph, Icon } from "./icon.tsx"
 import { DEPTHS, DepthPicker, depthLabel, report } from "./ui.tsx"
 
+/** what the agent select offers */
+const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", api: "API key" } satisfies Record<Settings["agent"], string>
+
 const DEFAULT = "default"
 /** a repository's select set to this has no mode or depth of its own */
 const GLOBAL = "global"
@@ -56,7 +59,7 @@ const webhookUrl = new URL("/api/webhooks/github", window.location.origin).href
 /** the dialog is one page: these are its sections, in order, and what the list on the left jumps to */
 const SECTIONS = [
   { id: "reviews", label: "Reviews", icon: SlidersHorizontalIcon, hint: "When glance reviews, and how hard it looks." },
-  { id: "agent", label: "Agent", icon: Robot01Icon, hint: "Which CLI reviews, on which model. Billed to its subscription." },
+  { id: "agent", label: "Agent", icon: Robot01Icon, hint: "Who reviews, on which model: a CLI on its subscription, or a model on an API key." },
   { id: "comments", label: "Comments", icon: Comment01Icon, hint: "How much glance says on a pull request." },
   { id: "rules", label: "Team rules", icon: LegalDocument01Icon, hint: "What your team cares about, in plain language." },
   { id: "authors", label: "Authors", icon: UserMultiple02Icon, hint: "Whose pull requests are reviewed on their own." },
@@ -213,17 +216,29 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
                   />
                 </Section>
                 <Section id="agent">
-                  <Row label="Agent" description="The logged-in CLI that reads the code.">
+                  <Row
+                    label="Agent"
+                    description={
+                      draft.settings.agent === "api"
+                        ? "A model on the server's API key, billed per token: what a team or company should use."
+                        : "The logged-in CLI that reads the code, on its subscription: for your own use."
+                    }
+                  >
                     <Select
                       className="w-full"
                       aria-label="Agent"
                       value={draft.settings.agent}
-                      // each cli has its own models: start the new one on its default
+                      // each agent has its own models: start the new one on its default
                       onValueChange={(v) => v && v !== draft.settings.agent && patch({ agent: v as Settings["agent"], model: "" })}
-                      items={{ claude: "Claude Code", codex: "Codex" }}
+                      items={AGENT_NAMES}
                     />
                   </Row>
-                  <Row label="Model" description="Default is whatever the CLI picks.">
+                  <Row
+                    label="Model"
+                    description={
+                      draft.settings.agent === "api" ? "Default is GLANCE_API_MODEL; GLANCE_API_MODELS adds more." : "Default is whatever the CLI picks."
+                    }
+                  >
                     <ModelSelect draft={draft.settings} onChange={(model) => set("model", model)} />
                   </Row>
                 </Section>

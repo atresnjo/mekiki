@@ -23,6 +23,7 @@ export {
   Settings,
   settingsProblem,
   Severity,
+  Usage,
 } from "./domain.ts"
 
 /** where the server mounts the rpc endpoint */
@@ -65,7 +66,7 @@ export class Authenticated extends RpcMiddleware.Service<Authenticated, { provid
 export const Model = Schema.Struct({ id: Schema.String, label: Schema.String })
 export interface Model extends Schema.Schema.Type<typeof Model> {}
 
-export const Models = Schema.Struct({ claude: Schema.Array(Model), codex: Schema.Array(Model) })
+export const Models = Schema.Struct({ claude: Schema.Array(Model), codex: Schema.Array(Model), api: Schema.Array(Model) })
 export interface Models extends Schema.Schema.Type<typeof Models> {}
 
 /** Provider-reported account usage, including activity outside glance. No credentials cross RPC. */
@@ -87,8 +88,11 @@ export const SubscriptionUsage = Schema.Struct({ claude: ProviderUsage, codex: P
 export interface SubscriptionUsage extends Schema.Schema.Type<typeof SubscriptionUsage> {}
 
 export const Status = Schema.Struct({
-  /** the version each cli reports, or null when it isn't installed or logged in */
-  agents: Schema.Struct({ claude: Schema.NullOr(Schema.String), codex: Schema.NullOr(Schema.String) }),
+  /**
+   * the version each cli reports, or null when it isn't installed or logged in. the api agent: its
+   * provider and model once it has a key, never the key
+   */
+  agents: Schema.Struct({ claude: Schema.NullOr(Schema.String), codex: Schema.NullOr(Schema.String), api: Schema.NullOr(Schema.String) }),
   webhook: Schema.Boolean,
   /** signing in is on: the dashboard offers to sign out */
   auth: Schema.Boolean,

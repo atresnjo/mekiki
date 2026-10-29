@@ -48,6 +48,7 @@ export const review = (overrides: Partial<Review> = {}): Omit<Review, "id"> => (
   unreviewed: [],
   steps: [],
   error: null,
+  usage: null,
   ...overrides,
 })
 
@@ -82,7 +83,12 @@ export const fakeAgent = Layer.succeed(
               { id: "", label: "Default" },
               { id: "sonnet", label: "Sonnet" },
             ]
-          : [{ id: "", label: "Default" }],
+          : agent === "api"
+            ? [
+                { id: "", label: "Default (gpt-6-sol)" },
+                { id: "gpt-6-luna", label: "gpt-6-luna" },
+              ]
+            : [{ id: "", label: "Default" }],
       ),
     review: () => Effect.die("not in tests"),
   }),
@@ -111,8 +117,8 @@ export const fakeAuth = (enabled: boolean) =>
 export const fakeHealth = Layer.succeed(
   Health.Service,
   Health.Service.of({
-    agents: Effect.succeed({ claude: "claude 1.0", codex: null }),
-    report: Effect.succeed({ ok: true, database: "ok", agents: { claude: "claude 1.0", codex: null } }),
+    agents: Effect.succeed({ claude: "claude 1.0", codex: null, api: null }),
+    report: Effect.succeed({ ok: true, database: "ok", agents: { claude: "claude 1.0", codex: null, api: null } }),
   }),
 )
 

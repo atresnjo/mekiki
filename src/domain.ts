@@ -1,13 +1,14 @@
 import { Effect, Option, Schema } from "effect"
 
-export const AgentKind = Schema.Literals(["claude", "codex"])
+/** the two subscription CLIs, and `api`: a model on an API key, through the AI SDK */
+export const AgentKind = Schema.Literals(["claude", "codex", "api"])
 export type AgentKind = typeof AgentKind.Type
 
 /** how hard the agent thinks: the one knob between a quick pass and a thorough one */
 export const Depth = Schema.Literals(["light", "medium", "high"])
 export type Depth = typeof Depth.Type
 
-/** the reasoning effort each depth runs at, in both CLIs */
+/** the reasoning effort each depth runs at, in every agent */
 export const EFFORT: Record<Depth, "low" | "medium" | "high"> = { light: "low", medium: "medium", high: "high" }
 
 /** a depth named in a label or comment: `glance:high`, `glance-light`, `/glance medium` */
@@ -42,6 +43,27 @@ export const ChunkReview = Schema.Struct({
   findings: Schema.Array(Finding),
 })
 export interface ChunkReview extends Schema.Schema.Type<typeof ChunkReview> {}
+
+/**
+ * what agent calls spent, summed: input counts the cached part too. the cost is in dollars, what
+ * claude code reported or the price table's estimate (prices.ts), and null once any call had neither
+ */
+export const Usage = Schema.Struct({
+  calls: Schema.Finite,
+  inputTokens: Schema.Finite,
+  cachedInputTokens: Schema.Finite,
+  outputTokens: Schema.Finite,
+  costUsd: Schema.NullOr(Schema.Finite),
+})
+export interface Usage extends Schema.Schema.Type<typeof Usage> {}
+
+export const addUsage = (a: Usage, b: Usage): Usage => ({
+  calls: a.calls + b.calls,
+  inputTokens: a.inputTokens + b.inputTokens,
+  cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+  outputTokens: a.outputTokens + b.outputTokens,
+  costUsd: a.costUsd === null || b.costUsd === null ? null : a.costUsd + b.costUsd,
+})
 
 /** when a pull request opens: review it right away, or post the depth checkboxes and wait for a tick */
 export const Mode = Schema.Literals(["ask", "auto"])
@@ -187,6 +209,8 @@ export const Review = Schema.Struct({
   unreviewed: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   steps: Schema.Array(Step),
   error: Schema.NullOr(Schema.String),
+  /** what its agent calls spent, failed ones too where it's known. reviews saved before this was kept have none */
+  usage: Schema.NullOr(Usage).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 })
 export interface Review extends Schema.Schema.Type<typeof Review> {}
 
@@ -207,6 +231,8 @@ export const parsePrUrl = (input: string): PrRef | undefined => {
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   agent: AgentKind,
   message: Schema.String,
+  /** what the call spent before it failed, when that's known (the api agent counts every step) */
+  usage: Schema.optional(Usage),
 }) {}
 
 export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {

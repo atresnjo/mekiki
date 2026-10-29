@@ -27,6 +27,7 @@ const review: Review = {
   unreviewed: [],
   steps: [],
   error: null,
+  usage: null,
 }
 
 const tick = (body: string, depth: string) => body.replace(new RegExp(`- \\[ \\](.*<!-- glance:${depth} -->)`), "- [x]$1")

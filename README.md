@@ -1,6 +1,6 @@
 # glance
 
-Fast, self-hosted pull request reviews that run on your **Claude Code** or **Codex** subscription: no API key, no per-token bill. Bun + Effect v4 on the server, a React + TanStack Router + Cloudflare Kumo dashboard talking to it over Effect RPC.
+Fast, self-hosted pull request reviews that run on your **Claude Code** or **Codex** subscription (no API key, no per-token bill), or, for a team or a company, on an **API key** through the [AI SDK](https://ai-sdk.dev) (see [Billing](#billing-a-subscription-or-an-api-key)). Bun + Effect v4 on the server, a React + TanStack Router + Cloudflare Kumo dashboard talking to it over Effect RPC.
 
 ## How a review works
 
@@ -24,8 +24,9 @@ A pull request is input from whoever wrote it, so the agent can read the checkou
 
 - **Claude Code** runs with `--restricted` and only `Read`, `Grep` and `Glob`: no shell, no network tools, file reads confined to the checkout (symlinks included), and the repository's own settings, hooks and `CLAUDE.md` ignored (`--safe-mode`).
 - **Codex** runs with a permission profile that may read only the checkout plus the system files a shell needs, not your home directory (so not `~/.codex/auth.json` or `~/.ssh`), and writes nothing. The repository's `AGENTS.md` is ignored.
+- **The API agent** has no shell at all: glance's own three tools (`read_file` with line ranges, `search` for plain text, `list_files` with a glob), and nothing when the review runs on the diff alone. Every path is relative, has no `..`, crosses no symlink and must resolve inside that review's checkout; a file over 1 MB isn't read, one answer holds at most 40k characters and a whole chunk's reading 600k, a search walks at most 20,000 entries and 32 MB, and a chunk gets at most `GLANCE_API_MAX_STEPS` model calls (the last one without tools, so it answers) within `AGENT_TIMEOUT_SECONDS`. Search is plain text, never a regular expression, so a pattern can't hang the server. No writes, no network: the only request is the one to the model.
 - Checkouts contain no symlinks (git writes them as plain files; the tarball fallback deletes them), no repository hooks ever run, and the GitHub token reaches git only through its environment (never its arguments).
-- The agents get an allowlist of glance's environment (the system basics, proxy and CA settings, and their own login), so the database URL, GitHub's credentials and the sign-in secrets never reach them; git and tar get less still. `bun scripts/isolation-check.ts` runs both CLIs on a pull request written to talk them into leaking those (and files beside the checkout) and fails if anything comes back.
+- The agent CLIs get an allowlist of glance's environment (the system basics, proxy and CA settings, and their own login), so the database URL, GitHub's credentials, the sign-in secrets and any API key never reach them; git and tar get less still. `bun scripts/isolation-check.ts` runs each agent that's set up on a pull request written to talk it into leaking those (and files beside the checkout) and fails if anything comes back.
 
 If the code can't be fetched at all (git and the tarball both fail, the repository is over `MAX_REPO_MB`, or the download takes longer than `CHECKOUT_TIMEOUT_SECONDS`), the review runs on the diff alone and says so.
 
@@ -115,9 +116,36 @@ Drafts are skipped until they're ready for review. A new review of a pull reques
 
 Other ways to pick a depth: comment `/glance high` (glance reacts 👀), or label the pull request `glance:high` (`glance:light`, `glance:medium`) to pin it; adding the label starts a review too. The Light / Medium / High switch in the dashboard sets the default.
 
-## Subscription auth
+## Billing: a subscription or an API key
 
-glance always strips `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and friends from the agent's environment, so reviews bill your subscription, never an API key.
+Anthropic's and OpenAI's terms let a Claude or ChatGPT subscription login be used for **one person's own work**. glance on your own repositories, reviewing your own pull requests, can run on your subscription. A team bot on an organization's repositories, or anything a company runs for its people, needs an **API key** (or a cloud provider's endpoint) instead. That's the `api` agent.
+
+|                     | `claude`, `codex`                     | `api`                                                            |
+| ------------------- | ------------------------------------- | ---------------------------------------------------------------- |
+| for                 | your own use                          | teams and companies                                              |
+| billed to           | your Claude or ChatGPT subscription   | the API key's account, per token                                 |
+| runs                | the logged-in CLI, as a child process | the AI SDK, in glance's own process                              |
+| reads the code with | the CLI's read-only file tools        | glance's sandboxed `read_file`, `search`, `list_files`           |
+| set up with         | `claude setup-token`, `codex login`   | `GLANCE_API_PROVIDER`, `GLANCE_API_MODEL` and the provider's key |
+
+Pick the agent in the dashboard's settings (or `GLANCE_AGENT=api`). Both kinds get the same system prompt, the same depth (as the provider's reasoning effort), the same timeout and the same output schema, so reviews read the same.
+
+### The API agent
+
+```sh
+GLANCE_API_PROVIDER=anthropic          # openai | anthropic | google
+GLANCE_API_MODEL=claude-sonnet-5-5     # what a review on the default model runs on
+ANTHROPIC_API_KEY=sk-ant-...           # OPENAI_API_KEY for openai, GOOGLE_GENERATIVE_AI_API_KEY for google
+# GLANCE_API_MODELS=claude-haiku-5-5,claude-opus-5-5   more models the dashboard offers
+```
+
+An OpenAI-compatible gateway (OpenRouter, LiteLLM, Azure OpenAI, a self-hosted vLLM) works through `GLANCE_API_PROVIDER=openai`, `GLANCE_API_BASE_URL` and the gateway's key in `OPENAI_API_KEY`; glance talks to it over chat completions. The key stays in the server's environment: it isn't stored, isn't sent to the dashboard (which sees the provider and model at most), isn't logged (errors that echo it have it replaced) and never reaches a child process. The CLIs keep having every API key stripped from theirs, as before: a key there would quietly beat the subscription login. The header's status reads the API agent as ready once it has a provider, a model and that provider's key; one never set up isn't counted as a problem.
+
+### What a review cost
+
+Every agent call's tokens (input, the cached part of it, output) are summed per review and kept with it. The API agent takes them from the AI SDK, for every step (a failed or timed-out call's too); `claude -p` reports its own and its cost, and `codex exec --json` its tokens. The review's page shows **≈ $0.14**, always an estimate: Claude Code's own figure where it gives one, otherwise the tokens priced from [`src/prices.ts`](src/prices.ts) (dollars per million input, cached-input and output tokens). For a subscription agent it's what the same tokens would cost on an API key, not a bill. Edit the table, or add and override entries with `GLANCE_PRICES='{"my-model": {"input": 1, "cachedInput": 0.1, "output": 5}}'`; a model it doesn't know shows its tokens and no price.
+
+### Subscription logins
 
 - **Claude Code:** the login from `claude` (keychain). On a headless server, run `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`.
 - **Codex:** `~/.codex/auth.json` from `codex login`; set `CODEX_HOME` to use another directory.
@@ -138,7 +166,7 @@ The **Repositories** tab gives a repository (by `owner/repo`; the ones glance ha
 
 Signing in is [Better Auth](https://better-auth.com) at `/api/auth`: GitHub and/or SSO (OIDC or SAML through `@better-auth/sso`, one provider, configured from the environment), sessions in postgres (7 days, `GLANCE_SESSION_DAYS`), HTTP-only cookies, origin checks and rate limits on its routes. Whether someone's allowed in is checked when the session starts and again on every rpc call. Production (`GLANCE_ENV=production`, which the image sets, or any `HOST` beyond loopback) doesn't start without a working sign-in. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
 
-What a review may use is bounded: `AGENT_TIMEOUT_SECONDS` per agent, `CHECKOUT_TIMEOUT_SECONDS` per download, `MAX_REPO_MB` for git's download as much as the tarball, `GLANCE_DISK_BUDGET_MB` for all the checkouts together (least recently used go first), `MAX_QUEUED_REVIEWS` running or waiting at once (another is turned away and says so), and the containers' CPU and memory (`GLANCE_CPUS`, `GLANCE_MEMORY`).
+What a review may use is bounded: `AGENT_TIMEOUT_SECONDS` per agent call, `GLANCE_API_MAX_STEPS` model calls per chunk for the API agent, `CHECKOUT_TIMEOUT_SECONDS` per download, `MAX_REPO_MB` for git's download as much as the tarball, `GLANCE_DISK_BUDGET_MB` for all the checkouts together (least recently used go first), `MAX_QUEUED_REVIEWS` running or waiting at once (another is turned away and says so), and the containers' CPU and memory (`GLANCE_CPUS`, `GLANCE_MEMORY`).
 
 Logs are JSON lines in the Docker image (`GLANCE_LOG_FORMAT`), and `GLANCE_OTLP_URL` sends traces and logs to an OpenTelemetry collector.
 
@@ -151,7 +179,9 @@ src/
   reviewer.ts   the pipeline: fetch → select → chunk → agents in parallel → triage → post
   panel.ts      glance's comment on a pull request, and its depth checkboxes
   checkout.ts   the repository at the head commit: incremental git fetch (tarball fallback), cached per commit
-  agent.ts      claude -p / codex exec drivers
+  agent.ts      claude -p / codex exec drivers, and the api agent on the AI SDK
+  sandbox.ts    the api agent's read-only tools: paths checked, every answer capped
+  prices.ts     dollars per million tokens, for each review's cost estimate
   github.ts     REST and GraphQL client (Effect HttpClient)
   diff.ts       diff parsing, file selection, chunking, line anchoring (pure)
   prompt.ts     system and review prompts

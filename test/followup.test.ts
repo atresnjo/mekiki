@@ -43,7 +43,7 @@ const agent = Layer.effect(
       review: (request) =>
         Effect.sync(() => {
           reviewed.push(...[...request.prompt.matchAll(/^### (\S+)/gm)].map((m) => m[1] ?? ""))
-          return { summary: "Looked.", findings: [] }
+          return { review: { summary: "Looked.", findings: [] }, usage: undefined }
         }),
     }),
   ),

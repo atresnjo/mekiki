@@ -7,6 +7,7 @@ import { Agent } from "./agent.ts"
 import { Checkout } from "./checkout.ts"
 import * as Diff from "./diff.ts"
 import {
+  addUsage,
   type AgentKind,
   type Depth,
   EFFORT,
@@ -18,6 +19,7 @@ import {
   type Severity,
   type Step,
   type GitHubError,
+  type Usage,
 } from "./domain.ts"
 import { GitHub } from "./github.ts"
 import { Panel } from "./panel.ts"
@@ -393,7 +395,14 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
     )
 
     const failures = results.flatMap((r) => (Result.isFailure(r) ? [r.failure.message] : []))
-    const reviews = results.flatMap((r) => (Result.isSuccess(r) ? [r.success] : []))
+    const reviews = results.flatMap((r) => (Result.isSuccess(r) ? [r.success.review] : []))
+    // what every call spent, a failed one's too where its agent knows
+    const spent = results.flatMap((r) => {
+      const usage = Result.isSuccess(r) ? r.success.usage : r.failure.usage
+      return usage ? [usage] : []
+    })
+    const usage: Usage | null = spent.length === 0 ? null : spent.reduce(addUsage)
+    if (usage) yield* save(id, { usage })
     // a failed chunk's files weren't looked at: the review is partial, and says which
     const unreviewed = results.flatMap((r, i) => (Result.isFailure(r) ? (chunks[i] ?? []).map((f) => f.path) : []))
     if (reviews.length === 0) return yield* new Failed({ message: failures[0] ?? "the agent returned nothing" })
@@ -468,6 +477,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
       unreviewed: [],
       steps: [],
       error: null,
+      usage: null,
     })
   })
 

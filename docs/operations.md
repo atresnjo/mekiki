@@ -13,16 +13,17 @@ What the README's deploy section leaves out: setting up signing in, the GitHub A
 
 All in `.env` (mode 600, owned by root or the deploy user; never committed):
 
-|                                                    |                                                                            |
-| -------------------------------------------------- | -------------------------------------------------------------------------- |
-| `POSTGRES_PASSWORD`                                | `openssl rand -hex 24`                                                     |
-| `BETTER_AUTH_SECRET`                               | `openssl rand -base64 32`. Changing it signs everyone out                  |
-| `GITHUB_WEBHOOK_SECRET`                            | `openssl rand -hex 32`                                                     |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                      | the app's `.pem`, mounted into the container (or `GITHUB_APP_PRIVATE_KEY`) |
-| `GITHUB_CLIENT_SECRET`, `GLANCE_SSO_CLIENT_SECRET` | from the provider you sign in with                                         |
-| `CLAUDE_CODE_OAUTH_TOKEN`                          | from `claude setup-token`                                                  |
+|                                                                       |                                                                            |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `POSTGRES_PASSWORD`                                                   | `openssl rand -hex 24`                                                     |
+| `BETTER_AUTH_SECRET`                                                  | `openssl rand -base64 32`. Changing it signs everyone out                  |
+| `GITHUB_WEBHOOK_SECRET`                                               | `openssl rand -hex 32`                                                     |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                         | the app's `.pem`, mounted into the container (or `GITHUB_APP_PRIVATE_KEY`) |
+| `GITHUB_CLIENT_SECRET`, `GLANCE_SSO_CLIENT_SECRET`                    | from the provider you sign in with                                         |
+| `CLAUDE_CODE_OAUTH_TOKEN`                                             | from `claude setup-token`                                                  |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | the api agent's, for `GLANCE_API_PROVIDER`: from the provider's console    |
 
-The agents never see any of these except their own login: they get an allowlist of the environment (`PATH`, `HOME`, locale, proxy and CA settings, the CLIs' own config and login), see `src/agent.ts`. git and tar get even less.
+The agent CLIs never see any of these except their own login: they get an allowlist of the environment (`PATH`, `HOME`, locale, proxy and CA settings, the CLIs' own config and login), see `src/agent.ts`. git and tar get even less. An API key is read by glance's own process only, for the api agent's requests; it isn't stored, sent to the dashboard or logged.
 
 ## 3. The GitHub App
 
@@ -69,10 +70,15 @@ Create a SAML application in the identity provider with the ACS URL `https://<do
 
 ## 5. Agent logins
 
+A subscription login is for one person's own use. glance running for a team or a company uses the api agent, on an API key (see the README's _Billing_).
+
 - Claude Code: on any machine, `claude setup-token`; put the token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.
 - Codex: `docker compose exec glance codex login --device-auth`. The login is kept in the `glance-data` volume.
+- API key: in `.env`, `GLANCE_API_PROVIDER`, `GLANCE_API_MODEL` and the provider's key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GOOGLE_GENERATIVE_AI_API_KEY`); `GLANCE_API_BASE_URL` for an OpenAI-compatible gateway. Then pick _API key_ in the dashboard's settings, or set `GLANCE_AGENT=api`. Restart glance after changing a key. The key isn't checked against the provider until a review uses it: a wrong one fails that review with the provider's 401.
 
-`https://<domain>/api/health` answers 200 once the database works and an agent is logged in.
+`https://<domain>/api/health` answers 200 once the database works and an agent is ready (a CLI logged in, or the api agent with its key).
+
+**Spend.** Every review keeps the tokens its agent calls used and an estimated cost (the review's page shows it), priced from `src/prices.ts` or `GLANCE_PRICES`. For the api agent, the provider's own console is the bill; set a spending limit there. A chunk is capped at `GLANCE_API_MAX_STEPS` model calls (default 30) and `AGENT_TIMEOUT_SECONDS`, and at most `AGENT_CONCURRENCY` run at once.
 
 ## 6. Release rehearsal on staging
 
@@ -126,9 +132,9 @@ docker compose up -d glance
 
 ## 8. Alerts
 
-- **Uptime:** point a monitor (Uptime Kuma, Better Stack, healthchecks…) at `https://<domain>/api/health`: 503 means the database is down or no agent is logged in.
+- **Uptime:** point a monitor (Uptime Kuma, Better Stack, healthchecks…) at `https://<domain>/api/health`: 503 means the database is down or no agent is ready.
 - **Backups:** `GLANCE_BACKUP_PING_URL` on a check that alerts when a day passes without a ping.
-- **Logs:** with `GLANCE_OTLP_URL` set, alert on error logs: `… isn't installed or logged in`, `couldn't check who's calling`, `webhook failed`, `rpc failed`. Without a collector, `docker compose logs glance | grep '"level":"ERROR"'` is the same list.
+- **Logs:** with `GLANCE_OTLP_URL` set, alert on error logs: `… isn't installed or logged in`, `the api agent has no provider, model or key`, `couldn't check who's calling`, `webhook failed`, `rpc failed`. Without a collector, `docker compose logs glance | grep '"level":"ERROR"'` is the same list.
 - **Disk:** alert at 80% on the volume holding Docker's data.
 - **GitHub:** the app's _Advanced_ tab lists failed deliveries (glance answers 500 when it failed on its side).
 

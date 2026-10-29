@@ -1,13 +1,14 @@
-// is glance able to review? the database answers and at least one agent cli is installed and
-// logged in. /api/health says so (docker's healthcheck and uptime monitors read it), and a
-// monitor logs an error the moment an agent stops working: a cli login expires quietly otherwise
+// is glance able to review? the database answers and at least one agent is ready: a cli installed
+// and logged in, or the api agent with its key. /api/health says so (docker's healthcheck and uptime
+// monitors read it), and a monitor logs an error the moment an agent stops working: a cli login
+// expires quietly otherwise
 import { Context, Duration, Effect, Layer, Option, Ref, Schedule } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { Agent } from "./agent.ts"
 import type { AgentKind } from "./domain.ts"
 import { Store } from "./store.ts"
 
-/** the version each cli reports, or null when it isn't installed or isn't logged in */
+/** the version each cli reports (the api agent: its provider and model), or null when it can't review */
 export type Agents = Record<AgentKind, string | null>
 
 export interface Report {
@@ -24,7 +25,14 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("glance/Health") {}
 
-const KINDS: ReadonlyArray<AgentKind> = ["claude", "codex"]
+const KINDS: ReadonlyArray<AgentKind> = ["claude", "codex", "api"]
+
+/** what's wrong, in the log */
+const DOWN: Record<AgentKind, string> = {
+  claude: "claude isn't installed or logged in: reviews with it fail until it is",
+  codex: "codex isn't installed or logged in: reviews with it fail until it is",
+  api: "the api agent has no provider, model or key: reviews with it fail until it does",
+}
 
 export const make = Effect.gen(function* () {
   const agent = yield* Agent.Service
@@ -34,6 +42,7 @@ export const make = Effect.gen(function* () {
     {
       claude: agent.check("claude").pipe(Effect.option, Effect.map(Option.getOrNull)),
       codex: agent.check("codex").pipe(Effect.option, Effect.map(Option.getOrNull)),
+      api: agent.check("api").pipe(Effect.option, Effect.map(Option.getOrNull)),
     },
     { concurrency: "unbounded" },
   )
@@ -60,8 +69,9 @@ export const make = Effect.gen(function* () {
     const last = yield* Ref.getAndSet(previous, now)
     yield* Effect.forEach(KINDS, (kind) => {
       const was = last?.[kind]
-      if (now[kind] === null && (last === undefined || was !== null))
-        return Effect.logError(`${kind} isn't installed or logged in: reviews with it fail until it is`)
+      // the api agent is opt in: one never set up isn't a problem
+      if (kind === "api" && now.api === null && (last === undefined || was === null)) return Effect.void
+      if (now[kind] === null && (last === undefined || was !== null)) return Effect.logError(DOWN[kind])
       if (now[kind] !== null && last !== undefined && was === null) return Effect.logInfo(`${kind} works again (${now[kind]})`)
       if (now[kind] !== null && last === undefined) return Effect.logInfo(`${kind}: ${now[kind]}`)
       return Effect.void
