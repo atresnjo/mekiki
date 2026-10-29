@@ -82,7 +82,7 @@ bun review https://github.com/owner/repo/pull/123 [--agent codex] [--model sonne
 
 ## Reviews on GitHub
 
-1. Expose the server (for example `cloudflared tunnel --url http://127.0.0.1:7420`).
+1. Expose the server. On a VPS that's Caddy (see above). While developing, `bun run tunnel` gives glance a fixed address on a domain of yours through a named Cloudflare tunnel (free on every plan; the domain's DNS must be on Cloudflare): run `cloudflared tunnel login` once, set `GLANCE_TUNNEL_HOSTNAME=glance.example.com` in `.env`, and the first run creates the tunnel and its DNS record. It points at the dashboard on 7421, which hands `/api/` to the server, so the webhook and signing in work through it; set `BETTER_AUTH_URL` to the same address. For a throwaway address, `cloudflared tunnel --url http://127.0.0.1:7420` (a new one each time).
 2. Add a webhook to the repository or organization: payload URL `https://<host>/api/webhooks/github`, content type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`, events **Pull requests** and **Issue comments**.
 3. The token (`GITHUB_TOKEN` or the `gh` login) needs read access to contents and write access to pull requests and issues (glance's comment and reactions live in the pull request's conversation).
 
@@ -197,7 +197,7 @@ src/
   usage.ts      subscription usage for the dashboard: claude's oauth usage endpoint, codex's app-server, cached
   observability.ts  json logs, otlp
   http.ts       webhook
-scripts/        isolation-check.ts (a hostile pull request leaks nothing), backup.sh, restore-check.sh
+scripts/        isolation-check.ts (a hostile pull request leaks nothing), tunnel.ts (a fixed dev address), backup.sh, restore-check.sh
 docs/           operations.md: signing in, the github app, the release rehearsal, backups, alerts, rollback
 web/            the dashboard: Vite, TanStack Router (file routes in src/routes), Kumo
   src/lib/glance.ts  the rpc client (AtomRpc, http + ndjson) and the live review feed
