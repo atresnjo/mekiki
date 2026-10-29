@@ -8,7 +8,7 @@ import { AsyncResult, Atom, AtomRpc } from "effect/reactivity"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 
 export type { Depth, Finding, Models, ProviderUsage, RepoSettings, Review, Settings, Severity, Status, User } from "@glance/api"
-export { isLogin, isRepo, LIST_MAX, repoSettings, RULES_MAX } from "@glance/api"
+export { isLogin, isRepo, LIST_MAX, repoIn, repoSettings, RULES_MAX } from "@glance/api"
 
 // the api lives on this origin: vite forwards /api/ to it in dev, a reverse proxy does in production
 
@@ -33,7 +33,8 @@ export const modelsAtom = Glance.query("GetModels", undefined)
 export const settingsAtom = Glance.query("GetSettings", undefined, { reactivityKeys: ["settings"] })
 export const repoSettingsAtom = Glance.query("GetRepoSettings", undefined, { reactivityKeys: ["settings"] })
 /** what adding a repository suggests: mounted only by the settings dialog */
-export const reviewedReposAtom = Glance.query("GetReviewedRepos", undefined)
+/** what adding a repository suggests: where glance is installed, and what it has reviewed */
+export const reposAtom = Glance.query("GetRepos", undefined)
 
 // ---------- writes: run with useAtomSet(…, { mode: "promiseExit" }), which keeps which error it was ----------
 

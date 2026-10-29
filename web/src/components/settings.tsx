@@ -18,12 +18,13 @@ import {
   type Failure,
   isLogin,
   isRepo,
+  repoIn,
   LIST_MAX,
   modelsAtom,
   type RepoSettings,
   repoSettings,
   repoSettingsAtom,
-  reviewedReposAtom,
+  reposAtom,
   RULES_MAX,
   saveRepoSettings,
   saveSettings,
@@ -283,11 +284,11 @@ const RepoList = ({
   repos: ReadonlyArray<RepoSettings>
   setRepos: (f: (repos: ReadonlyArray<RepoSettings>) => ReadonlyArray<RepoSettings>) => void
 }) => {
-  const reviewed = useValue(reviewedReposAtom) ?? []
+  const known = useValue(reposAtom) ?? []
   const [adding, setAdding] = useState("")
   const [expanded, setExpanded] = useState<string | undefined>()
-  const name = adding.trim().toLowerCase()
-  const suggestions = [...new Set(reviewed.map((r) => r.toLowerCase()))].filter((r) => !repos.some((s) => s.repo === r))
+  const name = repoIn(adding)
+  const suggestions = known.filter((r) => !repos.some((s) => s.repo === r))
   const valid = isRepo(name) && !repos.some((r) => r.repo === name)
 
   const add = () => {
@@ -315,7 +316,7 @@ const RepoList = ({
           }}
         >
           <Autocomplete label="Add a repository" items={suggestions} value={adding} onValueChange={(v) => setAdding(String(v))}>
-            <Autocomplete.InputGroup placeholder="owner/repo" />
+            <Autocomplete.InputGroup placeholder="owner/repo or its github link" />
             <Autocomplete.Content>
               <Autocomplete.List>
                 {(item: string) => (

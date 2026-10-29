@@ -6,6 +6,7 @@ import { Agent } from "./agent.ts"
 import { Auth } from "./auth.ts"
 import type { AppConfig } from "./config.ts"
 import { cleanList, type Depth, isRepo, parsePrUrl, type Review, type Settings, settingsProblem } from "./domain.ts"
+import { GitHub } from "./github.ts"
 import { Health } from "./health.ts"
 import { Reviewer } from "./reviewer.ts"
 import { Authenticated, CurrentUser, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
@@ -63,6 +64,7 @@ export const HandlersLive = (config: AppConfig) =>
       const health = yield* Health.Service
       const auth = yield* Auth.Service
       const usage = yield* Usage.Service
+      const github = yield* GitHub.Service
 
       const reviewById = Effect.fn("Rpc.reviewById")(function* (id: number) {
         const review = yield* store.get(id)
@@ -156,7 +158,19 @@ export const HandlersLive = (config: AppConfig) =>
           yield* store.deleteRepoSettings(repo.trim())
         }, api),
 
-        GetReviewedRepos: () => store.reviewedRepos.pipe(api),
+        GetRepos: Effect.fn("Rpc.GetRepos")(function* () {
+          // github not answering leaves the suggestions to what's been reviewed: the dialog still works
+          const [reachable, reviewed] = yield* Effect.all(
+            [
+              github.repositories.pipe(
+                Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't list the repositories glance can reach", error).pipe(Effect.as([]))),
+              ),
+              store.reviewedRepos,
+            ],
+            { concurrency: "unbounded" },
+          )
+          return [...new Set([...reachable, ...reviewed].map((r) => r.toLowerCase()))].sort()
+        }, api),
       })
     }),
   )

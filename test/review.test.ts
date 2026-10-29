@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { agentEnv, childEnv } from "../src/agent.ts"
 import { chunk, commentable, excludedBy, parseDiff, render, restrictTo, select } from "../src/diff.ts"
-import { depthIn, effective, type Finding, parsePrUrl, repoSettings, type Settings, settingsProblem } from "../src/domain.ts"
+import { depthIn, effective, type Finding, parsePrUrl, repoIn, repoSettings, type Settings, settingsProblem } from "../src/domain.ts"
 import { system, TEAM_RULES_MAX } from "../src/prompt.ts"
 import { anchor, reviewBody, suggestionBlock, triage } from "../src/reviewer.ts"
 import { configFrom, review } from "./support.ts"
@@ -264,4 +264,12 @@ test("a suggestion with backticks in it stays one suggestion block", () => {
   // a markdown line that opens a code block: the fence is longer than it, so it can't close early
   expect(suggestionBlock("```ts")).toBe("````suggestion\n```ts\n````")
   expect(suggestionBlock("const s = `a` + ``b``")).toBe("```suggestion\nconst s = `a` + ``b``\n```")
+})
+
+test("a repository is added as owner/repo, typed or pasted as a github link", () => {
+  expect(repoIn("Acme/API")).toBe("acme/api")
+  expect(repoIn(" https://github.com/vedro-labs/citapami ")).toBe("vedro-labs/citapami")
+  expect(repoIn("https://github.com/vedro-labs/citapami/pull/12")).toBe("vedro-labs/citapami")
+  expect(repoIn("github.com/acme/api.git")).toBe("acme/api")
+  expect(repoIn("https://gitlab.com/acme/api")).toBe("https://gitlab.com/acme/api")
 })

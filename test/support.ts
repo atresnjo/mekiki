@@ -122,7 +122,7 @@ export const fakeUsage = Layer.succeed(Usage.Service, Usage.Service.of({ read: E
 
 /**
  * github, faked: `permissions` is who has what on every repository (everyone else: none). no review
- * threads; `resolved` records each thread resolved, with its reply
+ * threads; `resolved` records each thread resolved, with its reply. installed on acme/api and acme/web
  */
 export const fakeGitHub = (
   acknowledged: Array<number>,
@@ -144,6 +144,7 @@ export const fakeGitHub = (
       permission: (_, login) => Effect.succeed(permissions[login] ?? "none"),
       reviewThreads: () => Effect.succeed([]),
       resolveThread: (_, id, reply) => Effect.sync(() => void resolved.push({ id, reply })),
+      repositories: Effect.succeed(["acme/api", "acme/web"]),
     }),
   )
 

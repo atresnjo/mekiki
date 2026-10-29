@@ -15,6 +15,7 @@ export {
   isLogin,
   isRepo,
   LIST_MAX,
+  repoIn,
   RepoSettings,
   repoSettings,
   Review,
@@ -134,7 +135,7 @@ export class GlanceRpcs extends RpcGroup.make(
   Rpc.make("SaveRepoSettings", { payload: RepoSettings, success: RepoSettings, error: ApiError }),
   /** back to the global settings */
   Rpc.make("DeleteRepoSettings", { payload: { repo: Schema.String }, error: ApiError }),
-  /** the repositories glance has reviewed: what adding one suggests */
-  Rpc.make("GetReviewedRepos", { success: Schema.Array(Schema.String), error: ApiError }),
+  /** the repositories glance can review (where the app is installed, or the token reaches) and has reviewed: what adding one suggests */
+  Rpc.make("GetRepos", { success: Schema.Array(Schema.String), error: ApiError }),
   Rpc.make("GetModels", { success: Models, error: ApiError }),
 ).middleware(Authenticated) {}

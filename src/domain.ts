@@ -105,6 +105,12 @@ const REPO = /^[\w.-]+\/[\w.-]+$/
 const LOGIN = /^[a-z\d](?:[a-z\d-]*[a-z\d])?(?:\[bot\])?$/i
 
 export const isRepo = (text: string) => REPO.test(text)
+/** `owner/repo` from what someone typed or pasted: itself, or a github url to the repository or anything in it */
+export const repoIn = (text: string) => {
+  const trimmed = text.trim().replace(/\.git$/, "")
+  const path = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/?#]+\/[^/?#]+)/i)?.[1] ?? trimmed
+  return path.toLowerCase()
+}
 export const isLogin = (text: string) => LOGIN.test(text)
 
 const union = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) => [...new Set([...a, ...b])]

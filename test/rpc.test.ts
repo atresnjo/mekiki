@@ -5,12 +5,12 @@ import { type RpcClient, type RpcGroup, RpcTest } from "effect/rpc"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
 import { GlanceRpcs, PAGE } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
-import { type Calls, configFrom, fakeAgent, fakeAuth, fakeHealth, fakeReviewer, fakeUsage, memoryStore, review } from "./support.ts"
+import { type Calls, configFrom, fakeAgent, fakeAuth, fakeGitHub, fakeHealth, fakeReviewer, fakeUsage, memoryStore, review } from "./support.ts"
 
 const run = <A, E>(signIn: boolean, f: (client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof GlanceRpcs>>, calls: Calls) => Effect.Effect<A, E, Store.Service>) => {
   const config = configFrom({})
   const calls: Calls = { started: [], cancelled: [] }
-  const services = Layer.mergeAll(memoryStore(config), fakeAuth(signIn), fakeReviewer(calls), fakeAgent, fakeHealth, fakeUsage).pipe(
+  const services = Layer.mergeAll(memoryStore(config), fakeAuth(signIn), fakeReviewer(calls), fakeAgent, fakeHealth, fakeUsage, fakeGitHub([])).pipe(
     Layer.provideMerge(BunServices.layer),
   )
   return Effect.runPromise(
@@ -108,4 +108,16 @@ test("repository settings: saved tidied, listed, removed; a bad name, login or o
   expect(result.listed).toEqual([result.saved])
   expect([result.badRepo._tag, result.badLogin._tag, result.long._tag]).toEqual(["Invalid", "Invalid", "Invalid"])
   expect(result.after).toEqual([])
+})
+
+test("adding a repository suggests where glance is installed and what it has reviewed, once each", async () => {
+  const repos = await run(false, (client) =>
+    Effect.gen(function* () {
+      const store = yield* Store.Service
+      yield* store.create(review({ repo: "acme/api", number: 1 }))
+      yield* store.create(review({ repo: "Other/Old", number: 2 }))
+      return yield* client.GetRepos(undefined)
+    }),
+  )
+  expect(repos).toEqual(["acme/api", "acme/web", "other/old"])
 })

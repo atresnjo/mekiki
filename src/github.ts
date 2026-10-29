@@ -64,6 +64,8 @@ export interface Interface {
   readonly reviewThreads: (pr: PrRef) => Effect.Effect<ReadonlyArray<ReviewThread>, GitHubError>
   /** reply in a review thread and resolve it: one graphql call */
   readonly resolveThread: (pr: PrRef, threadId: string, reply: string) => Effect.Effect<void, GitHubError>
+  /** the repositories glance can review, as owner/repo: the app's installations', else the token's. kept five minutes */
+  readonly repositories: Effect.Effect<ReadonlyArray<string>, GitHubError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
@@ -85,6 +87,13 @@ const decodeComment = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Fini
 const decodeInstallation = Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.Finite }))
 const decodePermission = Schema.decodeUnknownEffect(Schema.Struct({ permission: Schema.String, role_name: Schema.optional(Schema.String) }))
 const decodeAccessToken = Schema.decodeUnknownEffect(Schema.Struct({ token: Schema.String, expires_at: Schema.String }))
+const Repository = Schema.Struct({ full_name: Schema.String })
+const decodeInstallations = Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.Finite })))
+const decodeInstalledRepos = Schema.decodeUnknownEffect(Schema.Struct({ repositories: Schema.Array(Repository) }))
+const decodeRepos = Schema.decodeUnknownEffect(Schema.Array(Repository))
+
+/** a list github pages by the hundred: read this many pages at most */
+const MAX_LIST_PAGES = 10
 
 /** a graphql answer: an error comes back with status 200, in `errors` */
 const GraphQL = <A extends Schema.Top>(data: A) =>
@@ -208,7 +217,25 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
         )
       : Option.none<string>()
 
-  const tokenFor: (pr: PrRef) => Effect.Effect<string, GitHubError> = yield* Option.isSome(appId) && Option.isSome(privateKey)
+  /** every page of a list github pages by the hundred, until one comes back short */
+  const pages = <A>(page: (n: number) => Effect.Effect<ReadonlyArray<A>, GitHubError>) =>
+    Effect.gen(function* () {
+      const all: Array<A> = []
+      for (let n = 1; n <= MAX_LIST_PAGES; n++) {
+        const items = yield* page(n)
+        all.push(...items)
+        if (items.length < 100) break
+      }
+      return all
+    })
+
+  const listed = (client: HttpClient.HttpClient, operation: string, token: string, url: string) =>
+    execute(client, operation, HttpClientRequest.get(url).pipe(HttpClientRequest.bearerToken(token), HttpClientRequest.acceptJson))
+
+  const auth: {
+    readonly tokenFor: (pr: PrRef) => Effect.Effect<string, GitHubError>
+    readonly repositories: Effect.Effect<ReadonlyArray<string>, GitHubError>
+  } = yield* Option.isSome(appId) && Option.isSome(privateKey)
     ? Effect.gen(function* () {
         // Parse operator-supplied key material in the typed channel during layer acquisition.
         yield* Effect.try({
@@ -246,7 +273,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
           }),
           { capacity: 1024, timeToLive: (exit) => (Exit.isSuccess(exit) ? exit.value.keepFor : Duration.zero) },
         )
-        return (pr: PrRef) =>
+        const tokenFor = (pr: PrRef) =>
           Cache.get(installations, `${pr.owner}/${pr.repo}`).pipe(
             Effect.flatMap((id) => Cache.get(tokens, id)),
             Effect.map((t) => t.token),
@@ -254,8 +281,50 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
               e.status === 404 ? new GitHubError({ operation: "auth", status: 404, message: `the github app isn't installed on ${pr.owner}/${pr.repo}` }) : e,
             ),
           )
+        // every installation, then the repositories each was given
+        const repositories = Effect.gen(function* () {
+          const installed = yield* pages((n) =>
+            asApp(HttpClientRequest.get(`/app/installations?per_page=100&page=${n}`)).pipe(
+              Effect.flatMap((request) => execute(reader, "installations", request)),
+              Effect.flatMap((r) => json("installations", r, decodeInstallations)),
+            ),
+          )
+          const each = yield* Effect.forEach(
+            installed,
+            (installation) =>
+              Cache.get(tokens, installation.id).pipe(
+                Effect.flatMap(({ token }) =>
+                  pages((n) =>
+                    listed(reader, "repositories", token, `/installation/repositories?per_page=100&page=${n}`).pipe(
+                      Effect.flatMap((r) => json("repositories", r, decodeInstalledRepos)),
+                      Effect.map((page) => page.repositories),
+                    ),
+                  ),
+                ),
+              ),
+            { concurrency: 4 },
+          )
+          return each.flat().map((r) => r.full_name)
+        })
+        return { tokenFor, repositories }
       })
-    : Effect.map(Option.isSome(options.token) ? Effect.succeed(options.token.value) : ghToken, (token) => () => Effect.succeed(Redacted.value(token)))
+    : Effect.map(Option.isSome(options.token) ? Effect.succeed(options.token.value) : ghToken, (secret) => {
+        const token = Redacted.value(secret)
+        // what the token can reach: its owner's, collaborations and organizations' repositories
+        const repositories = pages((n) =>
+          listed(reader, "repositories", token, `/user/repos?per_page=100&page=${n}&sort=pushed&affiliation=owner,collaborator,organization_member`).pipe(
+            Effect.flatMap((r) => json("repositories", r, decodeRepos)),
+          ),
+        ).pipe(Effect.map((repos) => repos.map((r) => r.full_name)))
+        return { tokenFor: () => Effect.succeed(token), repositories }
+      })
+
+  const tokenFor = auth.tokenFor
+  // the list changes when someone installs the app on another repository: five minutes. a failure isn't kept
+  const repositoryList = yield* Cache.makeWith(
+    () => auth.repositories.pipe(Effect.map((repos) => [...new Set(repos.map((r) => r.toLowerCase()))].sort())),
+    { capacity: 1, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(5) : Duration.zero) },
+  )
 
   if (Option.isSome(appId) !== Option.isSome(privateKey))
     return yield* new GitHubError({ operation: "auth", message: "a github app needs both GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or _FILE)" })
@@ -462,6 +531,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
     permission,
     reviewThreads,
     resolveThread,
+    repositories: Cache.get(repositoryList, "all").pipe(Effect.withSpan("GitHub.repositories")),
   })
 })
 
