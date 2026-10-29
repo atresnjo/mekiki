@@ -22,7 +22,7 @@ function Root() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-8">
-      <Header status={status} live={feed?._tag === "Live"} />
+      <Header status={status} live={feed?._tag === "Live"} signedOut={feed?._tag === "Locked"} />
       {feed?._tag === "Locked" ? (
         <SignIn />
       ) : (

@@ -7,7 +7,8 @@ import { Empty } from "@cloudflare/kumo/components/empty"
 import { LayerCard } from "@cloudflare/kumo/components/layer-card"
 import { Loader } from "@cloudflare/kumo/components/loader"
 import { Text } from "@cloudflare/kumo/components/text"
-import { ArrowClockwiseIcon, ArrowSquareOutIcon, CaretDownIcon, CheckCircleIcon, StopIcon } from "@phosphor-icons/react"
+import { ArrowDown01Icon, ArrowReloadHorizontalIcon, CheckmarkCircle02Icon, LinkSquare02Icon, StopCircleIcon } from "@hugeicons/core-free-icons"
+import { Icon } from "./icon.tsx"
 import { useAtomSet } from "@effect/atom-react"
 import type { ReactNode } from "react"
 import { cancelReview, type Finding, type Review, retryReview } from "../lib/glance.ts"
@@ -115,7 +116,7 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
           {review.status === "running" && (
             <Button
               variant="secondary-destructive"
-              icon={<StopIcon />}
+              icon={<Icon icon={StopCircleIcon} />}
               onClick={() => cancel({ payload: { id: review.id } }).then((exit) => report(exit, "Review cancelled"))}
             >
               Cancel
@@ -124,8 +125,8 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
           <DropdownMenu>
             <DropdownMenu.Trigger
               render={
-                <Button variant="secondary" icon={<ArrowClockwiseIcon />}>
-                  Review again <CaretDownIcon size={12} />
+                <Button variant="secondary" icon={<Icon icon={ArrowReloadHorizontalIcon} />}>
+                  Review again <Icon icon={ArrowDown01Icon} size={14} />
                 </Button>
               }
             />
@@ -145,7 +146,7 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
             </DropdownMenu.Content>
           </DropdownMenu>
           <a href={review.url} target="_blank" rel="noreferrer">
-            <Button variant="primary" icon={<ArrowSquareOutIcon />}>
+            <Button variant="primary" icon={<Icon icon={LinkSquare02Icon} />}>
               Open on GitHub
             </Button>
           </a>
@@ -225,7 +226,7 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
             </div>
           ) : review.status === "done" ? (
             <div className="flex items-center gap-2 px-4 py-8 text-kumo-success">
-              <CheckCircleIcon size={18} weight="fill" /> <Text>No issues worth a comment.</Text>
+              <Icon icon={CheckmarkCircle02Icon} size={18} strokeWidth={2} /> <Text>No issues worth a comment.</Text>
             </div>
           ) : (
             <div className="px-4 py-8">

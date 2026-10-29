@@ -9,20 +9,19 @@ import { Switch } from "@cloudflare/kumo/components/switch"
 import { TagInput } from "@cloudflare/kumo/components/tag-input"
 import { Text } from "@cloudflare/kumo/components/text"
 import {
-  CaretDownIcon,
-  ChatTextIcon,
-  FileDashedIcon,
-  GearIcon,
+  ArrowDown01Icon,
+  Cancel01Icon,
+  Comment01Icon,
+  Delete02Icon,
+  FileBlockIcon,
   GitBranchIcon,
-  type Icon,
-  RobotIcon,
-  ScrollIcon,
+  LegalDocument01Icon,
+  Robot01Icon,
+  Settings02Icon,
   SlidersHorizontalIcon,
-  TrashIcon,
-  UsersIcon,
-  WebhooksLogoIcon,
-  XIcon,
-} from "@phosphor-icons/react"
+  UserMultiple02Icon,
+  WebhookIcon,
+} from "@hugeicons/core-free-icons"
 import { useAtomSet } from "@effect/atom-react"
 import { Exit } from "effect"
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
@@ -45,6 +44,7 @@ import {
   settingsAtom,
   useValue,
 } from "../lib/glance.ts"
+import { type Glyph, Icon } from "./icon.tsx"
 import { DEPTHS, DepthPicker, depthLabel, report } from "./ui.tsx"
 
 const DEFAULT = "default"
@@ -56,14 +56,14 @@ const webhookUrl = new URL("/api/webhooks/github", window.location.origin).href
 /** the dialog is one page: these are its sections, in order, and what the list on the left jumps to */
 const SECTIONS = [
   { id: "reviews", label: "Reviews", icon: SlidersHorizontalIcon, hint: "When glance reviews, and how hard it looks." },
-  { id: "agent", label: "Agent", icon: RobotIcon, hint: "Which CLI reviews, on which model. Billed to its subscription." },
-  { id: "comments", label: "Comments", icon: ChatTextIcon, hint: "How much glance says on a pull request." },
-  { id: "rules", label: "Team rules", icon: ScrollIcon, hint: "What your team cares about, in plain language." },
-  { id: "authors", label: "Authors", icon: UsersIcon, hint: "Whose pull requests are reviewed on their own." },
-  { id: "files", label: "Files", icon: FileDashedIcon, hint: "What's never reviewed." },
+  { id: "agent", label: "Agent", icon: Robot01Icon, hint: "Which CLI reviews, on which model. Billed to its subscription." },
+  { id: "comments", label: "Comments", icon: Comment01Icon, hint: "How much glance says on a pull request." },
+  { id: "rules", label: "Team rules", icon: LegalDocument01Icon, hint: "What your team cares about, in plain language." },
+  { id: "authors", label: "Authors", icon: UserMultiple02Icon, hint: "Whose pull requests are reviewed on their own." },
+  { id: "files", label: "Files", icon: FileBlockIcon, hint: "What's never reviewed." },
   { id: "repos", label: "Repositories", icon: GitBranchIcon, hint: "A repository's own mode and depth, and rules and lists added to the global ones." },
-  { id: "github", label: "GitHub", icon: WebhooksLogoIcon, hint: "Where GitHub sends its events." },
-] as const satisfies ReadonlyArray<{ id: string; label: string; icon: Icon; hint: string }>
+  { id: "github", label: "GitHub", icon: WebhookIcon, hint: "Where GitHub sends its events." },
+] as const satisfies ReadonlyArray<{ id: string; label: string; icon: Glyph; hint: string }>
 type SectionId = (typeof SECTIONS)[number]["id"]
 
 interface Draft {
@@ -151,14 +151,14 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
 
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger render={(p) => <Button {...p} variant="secondary" shape="square" icon={<GearIcon />} aria-label="Settings" />} />
+      <Dialog.Trigger render={(p) => <Button {...p} variant="ghost" size="sm" shape="square" icon={<Icon icon={Settings02Icon} />} aria-label="Settings" />} />
       <Dialog className="flex h-[min(88vh,780px)] w-[94vw] max-w-none flex-col overflow-hidden p-0 sm:w-[min(94vw,1040px)]">
         <div className="flex items-center justify-between gap-4 border-b border-kumo-hairline px-6 py-4">
           <div className="flex items-baseline gap-3">
             <Dialog.Title className="text-lg font-semibold">Settings</Dialog.Title>
             <Dialog.Description className="text-sm text-kumo-subtle">Applies to the next review.</Dialog.Description>
           </div>
-          <Dialog.Close render={(p) => <Button {...p} variant="ghost" shape="square" icon={<XIcon />} aria-label="Close" />} />
+          <Dialog.Close render={(p) => <Button {...p} variant="ghost" shape="square" icon={<Icon icon={Cancel01Icon} />} aria-label="Close" />} />
         </div>
         {!draft ? (
           <div className="flex flex-1 items-center justify-center">
@@ -167,20 +167,18 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
         ) : (
           <>
             <div className="flex min-h-0 flex-1">
-              <nav aria-label="Settings sections" className="hidden w-56 shrink-0 flex-col gap-0.5 border-r border-kumo-hairline bg-kumo-recessed p-3 md:flex">
-                {SECTIONS.map(({ id, label, icon: Glyph }) => (
+              <nav aria-label="Settings sections" className="hidden w-52 shrink-0 flex-col gap-px border-r border-kumo-hairline p-3 md:flex">
+                {SECTIONS.map(({ id, label, icon }) => (
                   <button
                     key={id}
                     type="button"
                     onClick={() => jump(id)}
                     aria-current={active === id ? "true" : undefined}
                     className={`flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors ${
-                      active === id
-                        ? "bg-kumo-base font-medium text-kumo-default shadow-xs ring-1 ring-kumo-hairline"
-                        : "text-kumo-subtle hover:bg-kumo-base/60 hover:text-kumo-default"
+                      active === id ? "bg-kumo-tint font-medium text-kumo-default" : "text-kumo-subtle hover:bg-kumo-tint/60 hover:text-kumo-default"
                     }`}
                   >
-                    <Glyph className="size-4 shrink-0" weight={active === id ? "bold" : "regular"} />
+                    <Icon icon={icon} className="shrink-0" strokeWidth={active === id ? 2 : 1.6} />
                     {label}
                   </button>
                 ))}
@@ -519,7 +517,7 @@ const RepoList = ({
             >
               <div className="flex items-center gap-2 px-3 py-2">
                 <Collapsible.Trigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
-                  <CaretDownIcon className={`shrink-0 transition-transform ${expanded === repo.repo ? "" : "-rotate-90"}`} />
+                  <Icon icon={ArrowDown01Icon} className={`shrink-0 transition-transform ${expanded === repo.repo ? "" : "-rotate-90"}`} />
                   <span className="truncate font-mono text-sm text-kumo-default">{repo.repo}</span>
                   <Text variant="secondary" size="xs" truncate>
                     {summary(repo)}
@@ -529,7 +527,7 @@ const RepoList = ({
                   variant="ghost"
                   shape="square"
                   size="sm"
-                  icon={<TrashIcon />}
+                  icon={<Icon icon={Delete02Icon} />}
                   aria-label={`Remove ${repo.repo}`}
                   onClick={() => setRepos((list) => list.filter((r) => r.repo !== repo.repo))}
                 />

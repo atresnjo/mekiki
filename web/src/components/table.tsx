@@ -8,23 +8,24 @@ import { Select } from "@cloudflare/kumo/components/select"
 import { Table } from "@cloudflare/kumo/components/table"
 import { Text } from "@cloudflare/kumo/components/text"
 import {
-  ArrowClockwiseIcon,
-  ArrowDownIcon,
-  ArrowSquareOutIcon,
-  ArrowUpIcon,
-  CaretUpDownIcon,
-  CopyIcon,
-  DotsThreeIcon,
-  EyeIcon,
+  ArrowDown02Icon,
+  ArrowReloadHorizontalIcon,
+  ArrowUp02Icon,
+  Copy01Icon,
   GitPullRequestIcon,
-  MagnifyingGlassIcon,
-  StopIcon,
-} from "@phosphor-icons/react"
+  LinkSquare02Icon,
+  MoreHorizontalIcon,
+  Search01Icon,
+  StopCircleIcon,
+  UnfoldMoreIcon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons"
 import { useAtomSet } from "@effect/atom-react"
 import { useNavigate } from "@tanstack/react-router"
 import { type ReactNode, useEffect, useMemo, useState } from "react"
 import { cancelReview, type Review, retryReview } from "../lib/glance.ts"
 import { toasts } from "../lib/toasts.ts"
+import { Icon, menuIcon } from "./icon.tsx"
 import { agentName, ago, DEPTHS, depthLabel, elapsed, fail, report, seconds, StatusBadge } from "./ui.tsx"
 
 type Sort = { readonly key: "title" | "result" | "time" | "started"; readonly desc: boolean }
@@ -45,7 +46,7 @@ const SortHead = ({
   className?: string
 }) => {
   const active = sort.key === sortKey
-  const Icon = !active ? CaretUpDownIcon : sort.desc ? ArrowDownIcon : ArrowUpIcon
+  const glyph = !active ? UnfoldMoreIcon : sort.desc ? ArrowDown02Icon : ArrowUp02Icon
   return (
     <Table.Head className={className}>
       <button
@@ -54,7 +55,7 @@ const SortHead = ({
         onClick={() => onSort({ key: sortKey, desc: active ? !sort.desc : sortKey !== "title" })}
       >
         {label}
-        <Icon size={14} className={active ? "text-kumo-default" : "text-kumo-inactive"} />
+        <Icon icon={glyph} size={14} className={active ? "text-kumo-default" : "text-kumo-inactive"} />
       </button>
     </Table.Head>
   )
@@ -75,23 +76,23 @@ export const ReviewActions = ({ review, trigger }: { review: Review; trigger?: R
       <DropdownMenu.Trigger
         render={
           (trigger as React.ReactElement | undefined) ?? (
-            <Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label="Review actions" />
+            <Button variant="ghost" size="sm" shape="square" icon={<Icon icon={MoreHorizontalIcon} size={18} strokeWidth={2} />} aria-label="Review actions" />
           )
         }
       />
       <DropdownMenu.Content>
-        <DropdownMenu.Item icon={<EyeIcon />} onClick={() => navigate({ to: "/reviews/$id", params: { id: String(review.id) } })}>
+        <DropdownMenu.Item icon={menuIcon(ViewIcon)} onClick={() => navigate({ to: "/reviews/$id", params: { id: String(review.id) } })}>
           View review
         </DropdownMenu.Item>
-        <DropdownMenu.LinkItem icon={<ArrowSquareOutIcon />} href={review.url} target="_blank">
+        <DropdownMenu.LinkItem icon={menuIcon(LinkSquare02Icon)} href={review.url} target="_blank">
           Open on GitHub
         </DropdownMenu.LinkItem>
-        <DropdownMenu.Item icon={<CopyIcon />} onClick={copy}>
+        <DropdownMenu.Item icon={menuIcon(Copy01Icon)} onClick={copy}>
           Copy pull request link
         </DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Sub>
-          <DropdownMenu.SubTrigger icon={ArrowClockwiseIcon}>Review again</DropdownMenu.SubTrigger>
+          <DropdownMenu.SubTrigger icon={menuIcon(ArrowReloadHorizontalIcon)}>Review again</DropdownMenu.SubTrigger>
           <DropdownMenu.SubContent>
             {DEPTHS.map((d) => (
               <DropdownMenu.Item
@@ -106,7 +107,7 @@ export const ReviewActions = ({ review, trigger }: { review: Review; trigger?: R
         </DropdownMenu.Sub>
         {review.status === "running" && (
           <DropdownMenu.Item
-            icon={<StopIcon />}
+            icon={menuIcon(StopCircleIcon)}
             variant="danger"
             onClick={() => cancel({ payload: { id: review.id } }).then((exit) => report(exit, "Review cancelled"))}
           >
@@ -178,7 +179,7 @@ export const ReviewsTable = ({
         <div className="flex flex-wrap items-center gap-2">
           <InputGroup className="w-72">
             <InputGroup.Addon>
-              <MagnifyingGlassIcon className="text-kumo-subtle" />
+              <Icon icon={Search01Icon} className="text-kumo-subtle" />
             </InputGroup.Addon>
             <InputGroup.Input
               aria-label="Search reviews"
@@ -250,7 +251,7 @@ export const ReviewsTable = ({
           <div className="py-12">
             <Empty
               size="sm"
-              icon={<GitPullRequestIcon size={32} className="text-kumo-inactive" />}
+              icon={<Icon icon={GitPullRequestIcon} size={32} strokeWidth={1.4} className="text-kumo-inactive" />}
               title={reviews.length === 0 ? "No reviews yet" : "No matching reviews"}
               description={
                 reviews.length === 0

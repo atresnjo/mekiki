@@ -1,52 +1,117 @@
 // granular imports throughout: the kumo barrel would pull its maps and globe into the bundle
 import { useAtomSet } from "@effect/atom-react"
-import { Badge } from "@cloudflare/kumo/components/badge"
+import { DropdownMenu } from "@cloudflare/kumo/components/dropdown"
 import { Button } from "@cloudflare/kumo/components/button"
 import { Input } from "@cloudflare/kumo/components/input"
 import { LayerCard } from "@cloudflare/kumo/components/layer-card"
+import { Popover } from "@cloudflare/kumo/components/popover"
 import { Switch } from "@cloudflare/kumo/components/switch"
 import { Text } from "@cloudflare/kumo/components/text"
 import { Tooltip } from "@cloudflare/kumo/components/tooltip"
-import { GithubLogoIcon, IdentificationCardIcon, LightningIcon, SignOutIcon } from "@phosphor-icons/react"
+import { ArrowDown01Icon, FlashIcon, GithubIcon, IdCardIcon, Logout03Icon } from "@hugeicons/core-free-icons"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Exit } from "effect"
 import { type FormEvent, useEffect, useState } from "react"
 import { type Methods, methods, signInWith, signOut, takeSignInError } from "../lib/auth.ts"
 import { type Depth, type Review, startReview, type Status, type User } from "../lib/glance.ts"
+import { Icon, menuIcon } from "./icon.tsx"
 import { SettingsDialog } from "./settings.tsx"
+import { UsageMenu } from "./usage.tsx"
 import { DepthPicker, report } from "./ui.tsx"
 
-export const Header = ({ status, live }: { status: Status | undefined; live: boolean }) => (
-  <header className="flex flex-wrap items-center justify-between gap-4">
-    <Link to="/" className="flex items-center gap-3">
-      <div className="flex size-9 items-center justify-center rounded-lg bg-kumo-brand text-white shadow-sm">
-        <LightningIcon size={20} weight="fill" />
+const AGENTS = [
+  { key: "claude", name: "Claude Code", login: "claude" },
+  { key: "codex", name: "Codex", login: "codex login" },
+] as const
+
+/** a status light: ready, or something to look at (pulsing while it's still trying) */
+const Dot = ({ ok, pulse }: { ok: boolean; pulse?: boolean }) => (
+  <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${ok ? "bg-kumo-success" : "bg-kumo-warning"} ${pulse ? "animate-pulse" : ""}`} />
+)
+
+/**
+ * the agents and the live feed in one line: it only has something to say when something is wrong,
+ * and the detail is a click away
+ */
+const Health = ({ status, live }: { status: Status | undefined; live: boolean }) => {
+  const down = status ? AGENTS.filter((a) => !status.agents[a.key]) : []
+  const problems = [...down.map((a) => `${a.name} logged out`), ...(live ? [] : ["Reconnecting…"])]
+  const ok = problems.length === 0
+  const ready = AGENTS.length - down.length
+  const long = !status ? "Checking…" : ok ? `${ready} agents ready` : problems.join(" · ")
+  const short = ok ? "Ready" : `${problems.length} issue${problems.length === 1 ? "" : "s"}`
+  return (
+    <Popover>
+      <Popover.Trigger
+        render={
+          <button
+            type="button"
+            aria-label={`Status: ${long}`}
+            className="inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
+          />
+        }
+      >
+        <Dot ok={ok && status !== undefined} pulse={!live} />
+        <span className="hidden sm:inline">{long}</span>
+        <span className="sm:hidden">{short}</span>
+        <Icon icon={ArrowDown01Icon} size={12} />
+      </Popover.Trigger>
+      <Popover.Content align="end" className="w-72 p-1 text-[13px]">
+        <div className="px-2.5 pt-2 pb-1.5 text-[11px] font-medium text-kumo-inactive">Agents on this machine</div>
+        {AGENTS.map((agent) => {
+          const version = status?.agents[agent.key]
+          return (
+            <div key={agent.key}>
+              <div className="flex items-center gap-2 px-2.5 py-1.5">
+                <Dot ok={Boolean(version)} />
+                <span className="text-kumo-default">{agent.name}</span>
+                <span className="ml-auto truncate pl-2 text-xs text-kumo-subtle" title={version ?? undefined}>
+                  {version ? "Logged in" : "Not installed or logged out"}
+                </span>
+              </div>
+              {status && !version && (
+                <p className="mx-2.5 mb-1.5 ml-[25px] text-xs text-kumo-subtle">
+                  Run <code className="rounded bg-kumo-recessed px-1 font-mono text-[11.5px] text-kumo-default">{agent.login}</code> where glance runs.
+                </p>
+              )}
+            </div>
+          )
+        })}
+        <div className="my-1 border-t border-kumo-hairline" />
+        <div className="flex items-center gap-2 px-2.5 py-1.5">
+          <Dot ok={live} pulse={!live} />
+          <span className="text-kumo-default">Live updates</span>
+          <span className={`ml-auto text-xs ${live ? "text-kumo-subtle" : "text-kumo-warning"}`}>{live ? "Connected" : "Reconnecting…"}</span>
+        </div>
+      </Popover.Content>
+    </Popover>
+  )
+}
+
+/** where you are on the left (glance / Reviews); on the right, how things stand, then settings and you. signed out: just the name */
+export const Header = ({ status, live, signedOut }: { status: Status | undefined; live: boolean; signedOut?: boolean }) => (
+  <header className="flex h-10 items-center justify-between gap-3">
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
+      <Link to="/" className="flex items-center gap-1.5">
+        <Icon icon={FlashIcon} size={18} strokeWidth={2} className="text-kumo-brand" />
+        <span className="text-[15px] font-semibold tracking-tight text-kumo-strong">glance</span>
+      </Link>
+      <span aria-hidden className="hidden text-lg font-light text-kumo-inactive sm:inline">
+        /
+      </span>
+      <Link to="/" className="hidden text-sm text-kumo-subtle hover:text-kumo-default sm:inline">
+        Reviews
+      </Link>
+    </nav>
+    {!signedOut && (
+      <div className="flex items-center gap-1">
+        <UsageMenu />
+        <Health status={status} live={live} />
+        <span aria-hidden className="mx-1 h-4 w-px bg-kumo-hairline" />
+        <SettingsDialog webhook={status?.webhook ?? false} />
+        {status?.auth && <Account user={status.user} />}
       </div>
-      <div className="flex flex-col">
-        <Text variant="heading" size="lg" as="span">
-          glance
-        </Text>
-        <Text variant="secondary" size="sm">
-          Fast pull request reviews on your Claude and Codex subscription
-        </Text>
-      </div>
-    </Link>
-    <div className="flex items-center gap-2">
-      {status &&
-        (["claude", "codex"] as const).map((agent) => (
-          <Tooltip key={agent} content={status.agents[agent] ?? "not installed or not logged in"} render={<span className="inline-flex" />}>
-            <Badge variant={status.agents[agent] ? "success" : "neutral"} appearance="dot" className={status.agents[agent] ? "" : "opacity-60"}>
-              {agent === "claude" ? "Claude Code" : "Codex"}
-            </Badge>
-          </Tooltip>
-        ))}
-      <Tooltip
-        content={live ? "Live updates connected" : "Reconnecting…"}
-        render={<span className={`mx-1 size-2 rounded-full ${live ? "bg-kumo-success" : "animate-pulse bg-kumo-warning"}`} />}
-      />
-      <SettingsDialog webhook={status?.webhook ?? false} />
-      {status?.auth && <Account user={status.user} />}
-    </div>
+    )}
   </header>
 )
 
@@ -101,7 +166,7 @@ export const StartForm = ({ reviews, depth, onDepth }: { reviews: ReadonlyArray<
             <Tooltip content="Review, but don't post anything to GitHub" render={<span className="inline-flex" />}>
               <Switch label="Dry run" size="sm" checked={dryRun} onCheckedChange={setDryRun} />
             </Tooltip>
-            <Button type="submit" variant="primary" size="lg" icon={<LightningIcon weight="fill" />} loading={busy}>
+            <Button type="submit" variant="primary" size="lg" icon={<Icon icon={FlashIcon} strokeWidth={2} />} loading={busy}>
               Review
             </Button>
           </div>
@@ -111,22 +176,37 @@ export const StartForm = ({ reviews, depth, onDepth }: { reviews: ReadonlyArray<
   )
 }
 
-/** who's signed in, and the way out */
+/** who's signed in, and the way out: one menu behind the avatar */
 const Account = ({ user }: { user: User }) => (
-  <>
-    <Tooltip content={user.email || user.name} render={<span className="inline-flex" />}>
+  <DropdownMenu>
+    <DropdownMenu.Trigger
+      render={
+        <button
+          type="button"
+          aria-label="Account"
+          className="ml-1 grid size-7 place-items-center rounded-full transition-shadow hover:ring-2 hover:ring-kumo-fill"
+        />
+      }
+    >
       {user.image ? (
-        <img src={user.image} alt={user.name || user.email} className="ml-1 size-7 rounded-full" referrerPolicy="no-referrer" />
+        <img src={user.image} alt="" className="size-[22px] rounded-full ring-1 ring-kumo-line" referrerPolicy="no-referrer" />
       ) : (
-        <span className="ml-1 flex size-7 items-center justify-center rounded-full bg-kumo-tint text-sm font-medium uppercase">
+        <span className="flex size-[22px] items-center justify-center rounded-full bg-kumo-tint text-xs font-medium uppercase">
           {(user.name || user.email).slice(0, 1)}
         </span>
       )}
-    </Tooltip>
-    <Tooltip content="Sign out on this browser" render={<span className="inline-flex" />}>
-      <Button variant="ghost" shape="square" icon={<SignOutIcon />} aria-label="Sign out" onClick={signOut} />
-    </Tooltip>
-  </>
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content align="end">
+      <div className="flex flex-col px-2 py-1.5">
+        <span className="text-sm font-medium text-kumo-strong">{user.name || user.email}</span>
+        {user.name && user.email && <span className="text-xs text-kumo-subtle">{user.email}</span>}
+      </div>
+      <DropdownMenu.Separator />
+      <DropdownMenu.Item icon={menuIcon(Logout03Icon)} onClick={signOut}>
+        Sign out on this browser
+      </DropdownMenu.Item>
+    </DropdownMenu.Content>
+  </DropdownMenu>
 )
 
 /** signing in is on and nobody is: github and the company's sso, whichever the server offers */
@@ -166,14 +246,14 @@ export const SignIn = () => {
             </Text>
           </div>
           {offered?.sso && (
-            <Button variant="primary" icon={<IdentificationCardIcon />} loading={busy === "sso"} disabled={busy !== undefined} onClick={() => go("sso")}>
+            <Button variant="primary" icon={<Icon icon={IdCardIcon} />} loading={busy === "sso"} disabled={busy !== undefined} onClick={() => go("sso")}>
               Continue with {offered.sso.name}
             </Button>
           )}
           {offered?.github && (
             <Button
               variant={offered.sso ? "secondary" : "primary"}
-              icon={<GithubLogoIcon />}
+              icon={<Icon icon={GithubIcon} />}
               loading={busy === "github"}
               disabled={busy !== undefined}
               onClick={() => go("github")}

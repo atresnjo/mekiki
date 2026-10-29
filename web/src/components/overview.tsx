@@ -3,13 +3,13 @@ import { DropdownMenu } from "@cloudflare/kumo/components/dropdown"
 import { LayerCard } from "@cloudflare/kumo/components/layer-card"
 import { Select } from "@cloudflare/kumo/components/select"
 import { Text } from "@cloudflare/kumo/components/text"
-import { ArrowDownRightIcon, ArrowUpRightIcon, ChartBarIcon, ChartLineIcon, DotsThreeIcon } from "@phosphor-icons/react"
+import { ArrowDownRight01Icon, ArrowUpRight01Icon, ChartColumnIcon, ChartLineData01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons"
+import { Icon, menuIcon } from "./icon.tsx"
 import { lazy, type ReactNode, Suspense, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { useAtomSet } from "@effect/atom-react"
 import { loadOlder, type Review, useMoreToLoad } from "../lib/glance.ts"
 import { change, type Metric, metric, RANGES, type Range } from "../lib/metrics.ts"
-import { SubscriptionUsage } from "./usage.tsx"
 import { ReviewsTable } from "./table.tsx"
 import { agentName, ago, depthLabel, elapsed, median, report, seconds, StatusBadge, useDarkMode } from "./ui.tsx"
 
@@ -44,7 +44,6 @@ export const Overview = ({ reviews, now }: { reviews: ReadonlyArray<Review>; now
   return (
     <div className="flex flex-col gap-6">
       <LatestCard reviews={reviews} now={now} typical={median(finishedTimes)} />
-      <SubscriptionUsage />
 
       <div className="flex items-center justify-between gap-4">
         <Text variant="heading" as="h2">
@@ -167,10 +166,10 @@ const Delta = ({ value, good }: { value: number | undefined; good: Good }) => {
   if (value === undefined || !Number.isFinite(value) || Math.abs(value) < 0.05) return null
   const up = value > 0
   const tone = good === "none" ? "text-kumo-subtle" : (good === "up") === up ? "text-kumo-success" : "text-kumo-danger"
-  const Icon = up ? ArrowUpRightIcon : ArrowDownRightIcon
+  const glyph = up ? ArrowUpRight01Icon : ArrowDownRight01Icon
   return (
     <span className={`tabular inline-flex items-center gap-0.5 text-base ${tone}`}>
-      <Icon size={16} weight="bold" />
+      <Icon icon={glyph} size={16} strokeWidth={2} />
       {Math.abs(value).toFixed(1)}%
     </span>
   )
@@ -211,7 +210,15 @@ const CardHeader = ({ title, m, format, good, menu }: { title: string; m: Metric
     </div>
     <DropdownMenu>
       <DropdownMenu.Trigger
-        render={<Button variant="ghost" size="sm" shape="square" icon={<DotsThreeIcon size={18} weight="bold" />} aria-label={`${title} options`} />}
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            shape="square"
+            icon={<Icon icon={MoreHorizontalIcon} size={18} strokeWidth={2} />}
+            aria-label={`${title} options`}
+          />
+        }
       />
       <DropdownMenu.Content>{menu}</DropdownMenu.Content>
     </DropdownMenu>
@@ -231,10 +238,10 @@ const BigCard = ({ title, metric: m, format, good }: { title: string; metric: Me
           good={good}
           menu={
             <>
-              <DropdownMenu.Item icon={<ChartLineIcon />} selected={type === "line"} onClick={() => setType("line")}>
+              <DropdownMenu.Item icon={menuIcon(ChartLineData01Icon)} selected={type === "line"} onClick={() => setType("line")}>
                 Line chart
               </DropdownMenu.Item>
-              <DropdownMenu.Item icon={<ChartBarIcon />} selected={type === "bar"} onClick={() => setType("bar")}>
+              <DropdownMenu.Item icon={menuIcon(ChartColumnIcon)} selected={type === "bar"} onClick={() => setType("bar")}>
                 Bar chart
               </DropdownMenu.Item>
             </>
