@@ -7,13 +7,15 @@ import { defineConfig } from "vite"
 const api = process.env.GLANCE_API_URL ?? "http://127.0.0.1:7420"
 // one prefix: the rpc (/api/rpc) and the webhook. it ends in "/" so a page named /api… stays the app's
 const proxy = { "/api/": api }
+// `bun run tunnel`'s address (GLANCE_TUNNEL_HOSTNAME, from .env): vite turns away hosts it doesn't know
+const allowedHosts = process.env.GLANCE_TUNNEL_HOSTNAME ? [process.env.GLANCE_TUNNEL_HOSTNAME] : []
 
 export default defineConfig({
   // @glance/api is the contract in ../src/rpc.ts (tsconfig paths)
   resolve: { tsconfigPaths: true },
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
-  server: { port: 7421, proxy },
-  preview: { port: 7421, proxy },
+  server: { port: 7421, proxy, allowedHosts },
+  preview: { port: 7421, proxy, allowedHosts },
   // the charts chunk is echarts (~650 kB, ~220 kB compressed): loaded lazily after the page and
   // cached for good (hashed name, immutable), so it isn't worth splitting further
   build: { chunkSizeWarningLimit: 700 },

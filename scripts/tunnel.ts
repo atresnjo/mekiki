@@ -11,7 +11,8 @@ import { $ } from "bun"
 
 const name = process.env.GLANCE_TUNNEL || "glance"
 const hostname = process.env.GLANCE_TUNNEL_HOSTNAME
-const target = process.env.GLANCE_TUNNEL_TARGET || "http://127.0.0.1:7421"
+// localhost, not 127.0.0.1: vite listens on whichever of ::1 and 127.0.0.1 the system names localhost
+const target = process.env.GLANCE_TUNNEL_TARGET || "http://localhost:7421"
 if (!hostname) {
   console.error("set GLANCE_TUNNEL_HOSTNAME in .env: the address on your domain, e.g. glance.skela.dev")
   process.exit(1)
