@@ -1,92 +1,20 @@
 # glance
 
-Fast, self-hosted pull request reviews that run on your **Claude Code** or **Codex** subscription (no API key, no per-token bill), or, for a team or a company, on an **API key** through the [AI SDK](https://ai-sdk.dev) (see [Billing](#billing-a-subscription-or-an-api-key)). Bun + Effect v4 on the server, a React + TanStack Router + Cloudflare Kumo dashboard talking to it over Effect RPC.
+Self-hosted pull request reviews. glance runs Claude Code or Codex on your own subscription, or any model through an API key: OpenAI, Anthropic, Google, or a gateway like LiteLLM or OpenRouter.
 
-## How a review works
+The server is Bun and Effect v4. The dashboard is React, TanStack Router and Cloudflare Kumo, talking to the server over Effect RPC. Everything is stored in Postgres.
 
-The agent gets the diff **and the repository**: every review downloads the code at the pull request's head commit, and the agent reads and searches it (callers, callees, types, config) before judging the change. Depth only changes how hard it thinks.
+## How it works
 
-## Why it's fast
+A review fetches the pull request, its diff and the repository at the head commit, all at the same time. Lockfiles, generated files, binaries and your exclude patterns are dropped. What's left is split into chunks of up to 150k characters (most pull requests fit in one), and every chunk goes to its own agent. The agent can read and search the checked-out code, so it looks at callers and types instead of guessing from the diff. Depth (light, medium, high) is the model's reasoning effort.
 
-- **The code downloads only what changed.** Each repository is a bare git repo kept between reviews. A review fetches its commit without file contents (commit and trees: small), then only the files no earlier review brought, in one batch: a push that touches 3 files downloads 3 files. It runs alongside the diff fetch, so the agents are usually the first and only thing to wait (about 2s on a small repo). In ask mode the code is fetched as soon as the pull request opens or is pushed to, so a ticked box starts with it on disk. One directory per commit: another depth on the same commit starts instantly; the least recently used are pruned (`KEEP_CHECKOUTS`). If git fails, the commit's tarball is streamed into `tar` instead.
-- **A lean agent.** `claude -p` / `codex exec` run with read-only file tools, no MCP servers, no project instructions, no session persistence and a short custom system prompt (Claude sends ~1k prompt tokens instead of its default agent prompt). The answer is schema-validated JSON.
-- **Everything overlaps.** The pull request, its diff, the code and the last review load in parallel; every chunk goes to its own agent process at once (`AGENT_CONCURRENCY`, shared across reviews).
-- **Big chunks.** Files are packed first-fit-decreasing into 150k-character chunks, so most pull requests are a single call.
-- **Plain code for the rest.** Lockfiles, generated files, binaries and your exclude patterns are dropped before the model sees anything; comments are pinned to lines GitHub accepts, filtered by confidence, de-duplicated and capped without a second model call.
-- **Incremental follow-ups.** After the first review, a push is reviewed as `last-reviewed...head`, restricted to the pull request's files. A push with nothing to read in it (screenshots, a lockfile) is skipped; ticking another depth, or asking when nothing new can be read, reviews the whole pull request again.
-- **One write.** All inline comments go out in a single GitHub review. Alongside it, one GraphQL read finds glance's threads whose problem is gone, decided by plain code, not another model call.
+The agent answers in JSON. glance pins each finding to a line GitHub accepts, drops low-confidence ones and repeats, and posts everything as one GitHub review. After the first review, a push only gets what changed since. When a problem glance flagged goes away, it replies "Fixed in abc1234" and resolves the thread.
 
-Measured end to end, light depth: [miracodeai/mira#353](https://github.com/miracodeai/mira/pull/353) (2 files) with Claude Code in 7.4s, 2.7s of it waiting on the 5 MB download; the same commit at high in 11.1s with the code already on disk; [#349](https://github.com/miracodeai/mira/pull/349) (22 files) with Codex in 30.9s.
+Each repository stays on disk as a bare git clone between reviews, so a push that touches 3 files downloads 3 files. A two-file pull request takes about 7 seconds at light depth.
 
-## Reading untrusted code safely
+## On GitHub
 
-A pull request is input from whoever wrote it, so the agent can read the checkout and nothing else:
-
-- **Claude Code** runs with `--restricted` and only `Read`, `Grep` and `Glob`: no shell, no network tools, file reads confined to the checkout (symlinks included), and the repository's own settings, hooks and `CLAUDE.md` ignored (`--safe-mode`).
-- **Codex** runs with a permission profile that may read only the checkout plus the system files a shell needs, not your home directory (so not `~/.codex/auth.json` or `~/.ssh`), and writes nothing. The repository's `AGENTS.md` is ignored.
-- **The API agent** has no shell at all: glance's own three tools (`read_file` with line ranges, `search` for plain text, `list_files` with a glob), and nothing when the review runs on the diff alone. Every path is relative, has no `..`, crosses no symlink and must resolve inside that review's checkout; a file over 1 MB isn't read, one answer holds at most 40k characters and a whole chunk's reading 600k, a search walks at most 20,000 entries and 32 MB, and a chunk gets at most `GLANCE_API_MAX_STEPS` model calls (the last one without tools, so it answers) within `AGENT_TIMEOUT_SECONDS`. Search is plain text, never a regular expression, so a pattern can't hang the server. No writes, no network: the only request is the one to the model.
-- Checkouts contain no symlinks (git writes them as plain files; the tarball fallback deletes them), no repository hooks ever run, and the GitHub token reaches git only through its environment (never its arguments).
-- The agent CLIs get an allowlist of glance's environment (the system basics, proxy and CA settings, and their own login), so the database URL, GitHub's credentials, the sign-in secrets and any API key never reach them; git and tar get less still. `bun scripts/isolation-check.ts` runs each agent that's set up on a pull request written to talk it into leaking those (and files beside the checkout) and fails if anything comes back.
-
-If the code can't be fetched at all (git and the tarball both fail, the repository is over `MAX_REPO_MB`, or the download takes longer than `CHECKOUT_TIMEOUT_SECONDS`), the review runs on the diff alone and says so.
-
-## Run
-
-```bash
-bun install
-claude          # once: log in to Claude Code (or `codex login`)
-gh auth login   # or set GITHUB_TOKEN
-# postgres: any will do (set DATABASE_URL); this one matches the default
-docker run -d --name glance-postgres -e POSTGRES_USER=glance -e POSTGRES_PASSWORD=glance -e POSTGRES_DB=glance -p 127.0.0.1:5432:5432 postgres:18-alpine
-bun dev         # api on http://127.0.0.1:7420, dashboard on http://localhost:7421
-```
-
-On your own machine nobody needs to sign in. To try signing in, set `BETTER_AUTH_SECRET`, an allow rule (`GLANCE_ALLOWED_EMAILS=you@example.com`) and a GitHub OAuth app whose callback is `http://localhost:7421/api/auth/callback/github` (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`).
-
-The server brings the database up to date when it starts: the migrations in `drizzle/` it hasn't applied yet run first. After changing `src/schema.ts`, `bun db:generate` writes the next one. The tests run on an in-process Postgres (PGlite) and need no database.
-
-`bun run test:e2e` rehearses the review pipeline using a local HTTP fixture and real agent subprocesses; `bun run test:e2e:postgres` also verifies the production database and sign-in adapters in a temporary Docker container. They write repeatable reports under `.data/`. [Effect conventions and verification](docs/effect.md) describes service boundaries, typed failures, and resource ownership.
-
-The server is the api only (Effect RPC at `/api/rpc`, http + ndjson, and the webhook); it doesn't serve the dashboard. `web/` is a plain Vite + TanStack Router app: `bun dev:web` runs it alone, `bun run build` writes `web/dist` for any static host. The dashboard calls the api on its own origin: Vite forwards `/api/` to it (`GLANCE_API_URL`, default `http://127.0.0.1:7420`); in production a reverse proxy does the same.
-
-## Deploy on a VPS
-
-Docker Compose runs three containers: `glance` (the api, git, and the `claude` and `codex` CLIs), `postgres`, and `web` (Caddy: the built dashboard, `/api/` forwarded to glance, https from Let's Encrypt). Only Caddy is reachable from outside.
-
-```bash
-git clone <this repo> glance && cd glance
-cp .env.example .env    # GLANCE_DOMAIN, POSTGRES_PASSWORD, BETTER_AUTH_SECRET, sign-in (github and/or sso, who's allowed), GITHUB_WEBHOOK_SECRET, a github app
-docker compose up -d --build
-docker compose logs -f glance
-```
-
-1. **DNS:** point `GLANCE_DOMAIN` at the VPS before starting, and open ports 80 and 443. Caddy gets the certificate on its own.
-2. **Agent logins** (at least one):
-   - Claude Code: on any machine, `claude setup-token`, and put the token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.
-   - Codex: `docker compose exec glance codex login --device-auth`. The login is kept in the `glance-data` volume.
-
-   `https://<domain>/api/health` answers 200 once the database works and at least one agent is logged in, and 503 otherwise. Docker's healthcheck reads it, and glance logs an error when an agent stops working (an expired login, say). Point an uptime monitor at it.
-
-3. **GitHub:** a GitHub App is best: its own rate limits, comments under its name, and access only to the repositories it's installed on. Give it read access to contents and write access to pull requests and issues, subscribe it to **Pull requests** and **Issue comments**, and set its webhook to `https://<domain>/api/webhooks/github` with `GITHUB_WEBHOOK_SECRET`. Set `GITHUB_APP_ID` and either `GITHUB_APP_PRIVATE_KEY` (newlines as `\n`) or `GITHUB_APP_PRIVATE_KEY_FILE` (mount the `.pem` into the container). A personal token (`GITHUB_TOKEN`) works too, with a repository or organization webhook.
-4. **Sign in:** with GitHub (an OAuth app, or the GitHub App's client id and secret, called back at `https://<domain>/api/auth/callback/github`) and/or the company's SSO, OIDC or SAML. Say who's allowed in with `GLANCE_ALLOWED_EMAILS`, `GLANCE_ALLOWED_GITHUB_ORGS` or `GLANCE_SSO_DOMAIN`. In production glance won't start until this is set up, and tells you what's missing. [docs/operations.md](docs/operations.md) has each provider's setup.
-
-The database is in the `postgres-data` volume; the checkouts and Codex's login are in `glance-data`. `scripts/backup.sh` dumps the database and sends it off the machine (rclone or restic), and `scripts/restore-check.sh` proves a dump restores; run them on a schedule. A stop or restart leaves running reviews to the next start, which reviews them again if they're less than an hour old. Run one glance per database: a second refuses to start.
-
-The CLIs are pinned to the versions the release was tested with (`CLAUDE_CODE_VERSION`, `CODEX_VERSION` in `.env` override them). [docs/operations.md](docs/operations.md) covers the release rehearsal on staging, backups and restoring, alerts, upgrading and rolling back.
-
-Review from the terminal (dry run unless `--post`):
-
-```bash
-bun review https://github.com/owner/repo/pull/123 [--agent codex] [--model sonnet] [--depth high] [--post] [--json]
-```
-
-## Reviews on GitHub
-
-1. Expose the server. On a VPS that's Caddy (see above). While developing, `bun run tunnel` gives glance a fixed address on a domain of yours through a named Cloudflare tunnel (free on every plan; the domain's DNS must be on Cloudflare): run `cloudflared tunnel login` once, set `GLANCE_TUNNEL_HOSTNAME=glance.example.com` in `.env`, and the first run creates the tunnel and its DNS record. It points at the dashboard on 7421, which hands `/api/` to the server, so the webhook and signing in work through it; set `BETTER_AUTH_URL` to the same address. For a throwaway address, `cloudflared tunnel --url http://127.0.0.1:7420` (a new one each time).
-2. Add a webhook to the repository or organization: payload URL `https://<host>/api/webhooks/github`, content type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`, events **Pull requests** and **Issue comments**.
-3. The token (`GITHUB_TOKEN` or the `gh` login) needs read access to contents and write access to pull requests and issues (glance's comment and reactions live in the pull request's conversation).
-
-glance keeps one comment on each pull request, with its status and three checkboxes:
+glance keeps one comment on each pull request:
 
 ```
 ⚡ glance
@@ -97,121 +25,162 @@ Review again at:
 - [ ] High: the most thorough, the slowest
 ```
 
-**Tick a box and the review starts at that depth.** The comment switches to "Reviewing at High…", then shows the result with fresh boxes, so you can always go deeper. The depth is the agent's reasoning effort (`low` / `medium` / `high` in both CLIs).
+Tick a box to review at that depth. You can also comment `/glance high` or add the label `glance:high`.
 
-What happens when a pull request opens is the **mode** (dashboard settings or `GLANCE_MODE`, and per repository in the dashboard):
+The mode decides what happens when a pull request opens. Set it in the dashboard (per repository too) or with `GLANCE_MODE`:
 
-- **ask** (default): glance posts the comment and waits for a tick. Pushes don't start reviews; the comment notes there are new commits, and the next tick reviews just those.
-- **auto**: glance reviews right away at the default depth and on every push after, at the depth the pull request was last reviewed at. The boxes are there to go deeper.
+- **ask** (default): post the comment and wait for a tick.
+- **auto**: review right away, and again on every push.
 
-Drafts are skipped until they're ready for review. A new review of a pull request cancels the one still running.
+Some rules:
 
-**Whose pull requests:** a **blocked author**'s pull requests (`dependabot[bot]`, say) are left alone in either mode: no review and no comment. Someone with the permission can still review one with `/glance`, a label or the dashboard. With **allowed authors** set, auto mode reviews only their pull requests right away; everyone else's get the checkboxes, as in ask mode. Logins compare without case.
+- Draft pull requests are skipped.
+- A new review cancels the one still running.
+- Only people with write access can start a review (`GLANCE_TRIGGER_PERMISSION`), and bots never can.
+- Each person gets 30 reviews an hour and each pull request 10.
+- Blocked authors (like `dependabot[bot]`) are ignored completely. If you set allowed authors, auto mode only reviews their pull requests on its own; everyone else gets the checkboxes.
 
-**Who may start one:** someone with at least `write` permission on the repository (`GLANCE_TRIGGER_PERMISSION`), for comments, ticked boxes and labels; a box counts only in glance's own comment, and bots never start reviews. Each person gets `GLANCE_REVIEWS_PER_USER_HOUR` (30) an hour and each pull request `GLANCE_REVIEWS_PER_PR_HOUR` (10). In auto mode a pull request whose author doesn't have the permission (a fork's, say) gets the checkboxes, for a maintainer to tick.
+If one chunk fails (a timeout, say), the review lists the files it didn't cover and the next review picks them up.
 
-**When part of a review fails** (an agent times out on one chunk, say), the review says so: "Partial review: 2 of 9 files couldn't be reviewed", the files listed, the panel reads "Partly reviewed", and the next review starts from before it, so those files get looked at.
+## Safety
 
-**When a problem is fixed, glance closes its thread.** After each review it posts, a thread glance started gets a "✅ Fixed in abc1234" reply and is resolved (the GitHub App needs Contents: read & write for that; without it, glance hides its own comment as outdated instead), once GitHub marks it outdated (the code under it changed) and the review didn't find the same problem again near there (same file, a nearby line, a similar title or the same kind of problem). A thread on code that hasn't changed stays open, threads glance didn't start are never touched, and one someone reopens after glance resolved it is left to them. `GLANCE_RESOLVE_FIXED=false` turns this off.
+A pull request is code from whoever wrote it, so the agent can read the checkout and nothing else.
 
-Other ways to pick a depth: comment `/glance high` (glance reacts 👀), or label the pull request `glance:high` (`glance:light`, `glance:medium`) to pin it; adding the label starts a review too. The Light / Medium / High switch in the dashboard sets the default.
+- **Claude Code** only gets `Read`, `Grep` and `Glob`, with `--restricted` and `--safe-mode`. It has no shell, and the repository's settings, hooks and `CLAUDE.md` are ignored.
+- **Codex** runs with a permission profile that reads the checkout and the system files a shell needs. It can't read your home directory or write anything, and the repository's `AGENTS.md` is ignored.
+- **The API agent** has no shell, only glance's own `read_file`, `search` (plain text, no regex) and `list_files`. Every path has to stay inside the checkout, and every answer is size-capped.
+- Child processes get an allowlisted environment, so the database URL, GitHub token, sign-in secrets and API keys never reach them.
 
-## Billing: a subscription or an API key
+`bun scripts/isolation-check.ts` points every configured agent at a pull request written to make it leak those secrets. It fails if anything comes back.
 
-Anthropic's and OpenAI's terms let a Claude or ChatGPT subscription login be used for **one person's own work**. glance on your own repositories, reviewing your own pull requests, can run on your subscription. A team bot on an organization's repositories, or anything a company runs for its people, needs an **API key** (or a cloud provider's endpoint) instead. That's the `api` agent.
+If the code can't be downloaded, the review runs on the diff alone and says so.
 
-|                     | `claude`, `codex`                     | `api`                                                            |
-| ------------------- | ------------------------------------- | ---------------------------------------------------------------- |
-| for                 | your own use                          | teams and companies                                              |
-| billed to           | your Claude or ChatGPT subscription   | the API key's account, per token                                 |
-| runs                | the logged-in CLI, as a child process | the AI SDK, in glance's own process                              |
-| reads the code with | the CLI's read-only file tools        | glance's sandboxed `read_file`, `search`, `list_files`           |
-| set up with         | `claude setup-token`, `codex login`   | `GLANCE_API_PROVIDER`, `GLANCE_API_MODEL` and the provider's key |
+## Subscription or API key
 
-Pick the agent in the dashboard's settings (or `GLANCE_AGENT=api`). Both kinds get the same system prompt, the same depth (as the provider's reasoning effort), the same timeout and the same output schema, so reviews read the same.
+Claude and ChatGPT subscriptions are for one person's own work. Use the `claude` or `codex` agent for your own repositories. For a team or a company, use the `api` agent with an API key.
 
-### The API agent
+**Subscription agents**
+
+- **Claude Code**: log in with `claude`. On a server, run `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`.
+- **Codex**: log in with `codex login`. Set `CODEX_HOME` to use another directory.
+
+The dashboard shows how much of each subscription is used.
+
+**API agent**
 
 ```sh
+GLANCE_AGENT=api                       # or pick it in the dashboard
 GLANCE_API_PROVIDER=anthropic          # openai | anthropic | google
-GLANCE_API_MODEL=claude-sonnet-5-5     # what a review on the default model runs on
-ANTHROPIC_API_KEY=sk-ant-...           # OPENAI_API_KEY for openai, GOOGLE_GENERATIVE_AI_API_KEY for google
-# GLANCE_API_MODELS=claude-haiku-5-5,claude-opus-5-5   more models the dashboard offers
+GLANCE_API_MODEL=claude-sonnet-5-5
+ANTHROPIC_API_KEY=sk-ant-...           # OPENAI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY for the others
+# GLANCE_API_MODELS=claude-haiku-5-5,claude-opus-5-5   extra models to choose from in the dashboard
 ```
 
-An OpenAI-compatible gateway (OpenRouter, LiteLLM, Azure OpenAI, a self-hosted vLLM) works through `GLANCE_API_PROVIDER=openai`, `GLANCE_API_BASE_URL` and the gateway's key in `OPENAI_API_KEY`; glance talks to it over chat completions. The key stays in the server's environment: it isn't stored, isn't sent to the dashboard (which sees the provider and model at most), isn't logged (errors that echo it have it replaced) and never reaches a child process. The CLIs keep having every API key stripped from theirs, as before: a key there would quietly beat the subscription login. The header's status reads the API agent as ready once it has a provider, a model and that provider's key; one never set up isn't counted as a problem.
+The key only lives in the server's environment. It isn't stored, logged, sent to the dashboard or passed to a child process.
 
-### What a review cost
+### LiteLLM and other gateways
 
-Every agent call's tokens (input, the cached part of it, output) are summed per review and kept with it. The API agent takes them from the AI SDK, for every step (a failed or timed-out call's too); `claude -p` reports its own and its cost, and `codex exec --json` its tokens. The review's page shows **≈ $0.14**, always an estimate: Claude Code's own figure where it gives one, otherwise the tokens priced from [`src/prices.ts`](src/prices.ts) (dollars per million input, cached-input and output tokens). For a subscription agent it's what the same tokens would cost on an API key, not a bill. Edit the table, or add and override entries with `GLANCE_PRICES='{"my-model": {"input": 1, "cachedInput": 0.1, "output": 5}}'`; a model it doesn't know shows its tokens and no price.
+Any OpenAI-compatible endpoint works, including LiteLLM, OpenRouter, Azure OpenAI and vLLM. Set the provider to `openai`, point the base URL at the gateway, and put the gateway's key in `OPENAI_API_KEY`:
 
-### Subscription logins
+```sh
+GLANCE_AGENT=api
+GLANCE_API_PROVIDER=openai             # always openai for a gateway, whatever model is behind it
+GLANCE_API_BASE_URL=https://litellm.example.com/v1
+OPENAI_API_KEY=sk-...                  # a LiteLLM virtual key
+GLANCE_API_MODEL=claude-sonnet         # a model_name from your LiteLLM config
+```
 
-- **Claude Code:** the login from `claude` (keychain). On a headless server, run `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`.
-- **Codex:** `~/.codex/auth.json` from `codex login`; set `CODEX_HOME` to use another directory.
+glance sends chat completions to the gateway. Some things to know:
 
-The dashboard shows account-wide subscription usage (including use outside glance), with percent used and reset times. It checks Claude at most once every 15 minutes and Codex at most once every five, and never runs a model to read usage. Codex uses its [app-server rate-limit API](https://developers.openai.com/codex/app-server#6-rate-limits-chatgpt). Claude uses the CLI's OAuth usage endpoint with `CLAUDE_CODE_OAUTH_TOKEN`, its macOS keychain login, or `CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude`). That endpoint is not a public API contract: headless tokens may lack permission and usage checks may be rate limited. That rate limit is shared with `/usage` in Claude Code, so on a 429 glance waits out the endpoint's `Retry-After` (30 minutes if it sends none) before checking again. Those states appear as unavailable, never as zero usage. Claude Code owns token refresh; sign in again if usage reports an expired login. Credentials stay on the server.
+- The model needs tool calling and JSON schema output. Small local models often fail the schema, and that chunk then shows up as failed.
+- Depth is sent as `reasoning_effort`. If a model behind LiteLLM rejects it, set `drop_params: true` under `litellm_settings`.
+- The cost estimate looks up prices by model name, and LiteLLM aliases aren't in `src/prices.ts`. Add yours with `GLANCE_PRICES` (below), or use LiteLLM's own spend tracking.
+
+### Cost
+
+Each review shows an estimated cost. It uses Claude Code's own figure when there is one; otherwise it multiplies the tokens by the prices in [`src/prices.ts`](src/prices.ts). For a subscription agent, it's what the same tokens would cost on an API key. To add or override prices:
+
+```sh
+GLANCE_PRICES='{"claude-sonnet": {"input": 3, "cachedInput": 0.3, "output": 15}}'   # dollars per million tokens
+```
+
+## Run locally
+
+```bash
+bun install
+claude          # log in once (or `codex login`)
+gh auth login   # or set GITHUB_TOKEN
+docker run -d --name glance-postgres -e POSTGRES_USER=glance -e POSTGRES_PASSWORD=glance -e POSTGRES_DB=glance -p 127.0.0.1:5432:5432 postgres:18-alpine
+bun dev         # api on http://127.0.0.1:7420, dashboard on http://localhost:7421
+```
+
+Locally nobody has to sign in. Migrations run when the server starts. After you change `src/schema.ts`, run `bun db:generate`.
+
+Review a pull request from the terminal. It's a dry run unless you add `--post`:
+
+```bash
+bun review https://github.com/owner/repo/pull/123 [--agent codex|api] [--model sonnet] [--depth high] [--post] [--json]
+```
+
+### Webhooks while developing
+
+GitHub has to reach your machine. `bun run tunnel` gives glance a fixed address through a named Cloudflare tunnel; the domain's DNS has to be on Cloudflare. Run `cloudflared tunnel login` once and set `GLANCE_TUNNEL_HOSTNAME=glance.example.com` in `.env`. The first run creates the tunnel and the DNS record. Set `BETTER_AUTH_URL` to the same address.
+
+Then add a webhook to the repository or organization:
+
+- Payload URL: `https://<host>/api/webhooks/github`
+- Content type: `application/json`
+- Secret: `GITHUB_WEBHOOK_SECRET`
+- Events: **Pull requests** and **Issue comments**
+
+The GitHub token needs read access to contents, and write access to pull requests and issues.
+
+## Deploy
+
+Docker Compose runs three containers: `glance` (the api plus git and the CLIs), `postgres`, and `web` (Caddy, which serves the dashboard, forwards `/api/` to glance and gets the TLS certificate). Only Caddy is reachable from outside.
+
+```bash
+cp .env.example .env    # domain, passwords, sign-in, webhook secret, github app
+docker compose up -d --build
+```
+
+1. Point `GLANCE_DOMAIN` at the server and open ports 80 and 443.
+2. Log in at least one agent: put `claude setup-token`'s output in `CLAUDE_CODE_OAUTH_TOKEN`, or run `docker compose exec glance codex login --device-auth`. Using an API key instead also works.
+3. Create a GitHub App with read access to contents, write access to pull requests and issues, and the **Pull requests** and **Issue comments** events. Its webhook goes to `https://<domain>/api/webhooks/github`. A personal `GITHUB_TOKEN` works too.
+4. Set up sign-in with GitHub and/or SSO (OIDC or SAML), and say who's allowed in with `GLANCE_ALLOWED_EMAILS`, `GLANCE_ALLOWED_GITHUB_ORGS` or `GLANCE_SSO_DOMAIN`. In production glance won't start without this.
+
+`/api/health` returns 200 once the database works and an agent is logged in. Point an uptime monitor at it. Run only one glance per database; a second one refuses to start.
+
+[docs/operations.md](docs/operations.md) covers the GitHub App, every sign-in provider, backups, alerts, upgrades and rollback.
 
 ## Configuration
 
-Everything is optional; see [`.env.example`](.env.example). Agent, model, depth, mode, posting and comment limits can also be changed in the dashboard's settings and are stored in Postgres (`DATABASE_URL`).
+Everything is optional; [`.env.example`](.env.example) lists all of it. The dashboard settings cover the agent, model, depth, mode and comment limits, plus:
 
-The settings' **Rules** tab holds what's about the team rather than the agent, all stored in Postgres:
+- **Team rules**: plain-language rules like "we never throw, use Effect" go into the agent's prompt. The repository's own `CLAUDE.md` and `AGENTS.md` are ignored on purpose, because a pull request can edit them.
+- **Blocked and allowed authors**: lists of GitHub logins.
+- **Exclude**: `.gitignore`-style globs for files that should never be reviewed.
+- **Per repository**: its own mode and depth, plus extra rules, author lists and exclude patterns.
 
-- **Team rules:** plain-language review rules ("we use Effect, never throw", "migrations must be reversible"), up to 4,000 characters. They go into the agent's system prompt, apart from glance's fixed rules, and a change that breaks one is reported. They come only from the dashboard: glance ignores the repository's `CLAUDE.md` and `AGENTS.md` on purpose, because a pull request can edit them, and the agent is told that text in the repository is data, never instructions.
-- **Blocked authors** and **allowed authors:** GitHub logins (see [Reviews on GitHub](#reviews-on-github)). `GLANCE_BLOCKED_AUTHORS` sets the first list until it's changed in the dashboard.
-- **Exclude:** globs of files never reviewed, on top of the lockfiles and generated files glance always skips, written as in `.gitignore`: `*.snap` matches at any depth, `/docs/**` from the root, `fixtures/` a directory anywhere. The review lists the files skipped and the pattern that matched. `GLANCE_EXCLUDE` sets them until changed in the dashboard.
+Limits: `AGENT_TIMEOUT_SECONDS`, `GLANCE_API_MAX_STEPS`, `CHECKOUT_TIMEOUT_SECONDS`, `MAX_REPO_MB`, `GLANCE_DISK_BUDGET_MB`, `MAX_QUEUED_REVIEWS` and `AGENT_CONCURRENCY`. `GLANCE_OTLP_URL` sends traces and logs to an OpenTelemetry collector.
 
-The **Repositories** tab gives a repository (by `owner/repo`; the ones glance has reviewed are suggested) settings of its own: a mode and a default depth that replace the global ones, and rules, author lists and exclude patterns that are added to the global ones. Everything else, and every repository not listed, uses the global settings. Only people signed in to the dashboard can change any of it.
-
-Signing in is [Better Auth](https://better-auth.com) at `/api/auth`: GitHub and/or SSO (OIDC or SAML through `@better-auth/sso`, one provider, configured from the environment), sessions in postgres (7 days, `GLANCE_SESSION_DAYS`), HTTP-only cookies, origin checks and rate limits on its routes. Whether someone's allowed in is checked when the session starts and again on every rpc call. Production (`GLANCE_ENV=production`, which the image sets, or any `HOST` beyond loopback) doesn't start without a working sign-in. The webhook is protected by its signature, and each delivery is acted on once (GitHub redeliveries are ignored).
-
-What a review may use is bounded: `AGENT_TIMEOUT_SECONDS` per agent call, `GLANCE_API_MAX_STEPS` model calls per chunk for the API agent, `CHECKOUT_TIMEOUT_SECONDS` per download, `MAX_REPO_MB` for git's download as much as the tarball, `GLANCE_DISK_BUDGET_MB` for all the checkouts together (least recently used go first), `MAX_QUEUED_REVIEWS` running or waiting at once (another is turned away and says so), and the containers' CPU and memory (`GLANCE_CPUS`, `GLANCE_MEMORY`).
-
-Logs are JSON lines in the Docker image (`GLANCE_LOG_FORMAT`), and `GLANCE_OTLP_URL` sends traces and logs to an OpenTelemetry collector.
-
-## Layout
+## Development
 
 ```
-src/
-  main.ts       server: Effect HTTP router on Bun.serve: the rpc, signing in, health and the webhook
-  cli.ts        bun review <url>
-  reviewer.ts   the pipeline: fetch → select → chunk → agents in parallel → triage → post
-  panel.ts      glance's comment on a pull request, and its depth checkboxes
-  checkout.ts   the repository at the head commit: incremental git fetch (tarball fallback), cached per commit
-  agent.ts      claude -p / codex exec drivers, and the api agent on the AI SDK
-  sandbox.ts    the api agent's read-only tools: paths checked, every answer capped
-  prices.ts     dollars per million tokens, for each review's cost estimate
-  github.ts     REST and GraphQL client (Effect HttpClient)
-  diff.ts       diff parsing, file selection, chunking, line anchoring (pure)
-  prompt.ts     system and review prompts
-  store.ts      reviews, settings (global and per repository), comments, deliveries: drizzle queries
-  database.ts   postgres (drizzle on @effect/sql-pg), migrated at startup
-  schema.ts     the tables; drizzle/ holds their migrations
-  rpc.ts        the dashboard's api: one Effect RPC group, shared with web/ (as @glance/api)
-  rpc-server.ts its handlers, and the middleware that checks who's calling
-  auth.ts       signing in: better auth (github, sso), and who's allowed in
-  triggers.ts   who may start a review from github, and how often
-  instance.ts   one glance per database: an advisory lock
-  health.ts     /api/health, and the monitor that logs when an agent stops working
-  usage.ts      subscription usage for the dashboard: claude's oauth usage endpoint, codex's app-server, cached
-  observability.ts  json logs, otlp
-  http.ts       webhook
-scripts/        isolation-check.ts (a hostile pull request leaks nothing), tunnel.ts (a fixed dev address), backup.sh, restore-check.sh
-docs/           operations.md: signing in, the github app, the release rehearsal, backups, alerts, rollback
-web/            the dashboard: Vite, TanStack Router (file routes in src/routes), Kumo
-  src/lib/glance.ts  the rpc client (AtomRpc, http + ndjson) and the live review feed
+src/reviewer.ts   the pipeline: fetch → select → chunk → agents → triage → post
+src/agent.ts      claude / codex drivers and the API agent (AI SDK)
+src/sandbox.ts    the API agent's read-only tools
+src/checkout.ts   incremental git fetch, cached per commit
+src/diff.ts       diff parsing, filtering, chunking (pure)
+src/github.ts     REST and GraphQL client
+src/rpc.ts        the dashboard's API, shared with web/
+web/              the dashboard
 ```
 
 ```bash
 bun test && bun run typecheck && bun run lint && bun run fmt:check
+bun run test:e2e            # the review pipeline with real agent processes and a fake GitHub
+bun run test:e2e:browser    # the dashboard in Playwright; no model calls, nothing posted to GitHub
 ```
 
-## End-to-end verification in a browser
-
-```bash
-bunx playwright install chromium
-bun run test:e2e:browser
-```
-
-This starts isolated local API and dashboard servers on ports 7520/7521, using PGlite, fixture CLI processes, and a local provider endpoint. It exercises sign-in, subscription usage, caching and provider failures, dry-run retries, child-process secret isolation and webhook authorization without calling models or writing to GitHub. Repeatable artifacts are saved to `.data/e2e/`: `report.json`, desktop/mobile screenshots, server logs and `trace.zip` (open with `bunx playwright show-trace .data/e2e/trace.zip`).
+Tests run on an in-process Postgres (PGlite) and don't need a database. [docs/effect.md](docs/effect.md) explains the Effect conventions.
