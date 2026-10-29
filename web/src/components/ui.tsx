@@ -36,7 +36,7 @@ export const report = <A,>(exit: Exit.Exit<A, Failure>, done?: string) => {
   return exit
 }
 
-export const AGENT_NAMES: Record<Review["agent"], string> = { claude: "Claude Code", codex: "Codex", api: "API" }
+export const AGENT_NAMES: Record<Review["agent"], string> = { claude: "Claude Code", codex: "Codex", api: "API key" }
 
 export const agentName = (r: Pick<Review, "agent" | "model">) => `${AGENT_NAMES[r.agent]}${r.model ? ` · ${r.model}` : ""}`
 

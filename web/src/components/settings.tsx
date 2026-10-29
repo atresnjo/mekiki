@@ -45,10 +45,7 @@ import {
   useValue,
 } from "../lib/glance.ts"
 import { type Glyph, Icon } from "./icon.tsx"
-import { DEPTHS, DepthPicker, depthLabel, report } from "./ui.tsx"
-
-/** what the agent select offers */
-const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", api: "API key" } satisfies Record<Settings["agent"], string>
+import { AGENT_NAMES, DEPTHS, DepthPicker, depthLabel, report } from "./ui.tsx"
 
 const DEFAULT = "default"
 /** a repository's select set to this has no mode or depth of its own */

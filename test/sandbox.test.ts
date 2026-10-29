@@ -71,6 +71,8 @@ describe("reading", () => {
     expect(await run((s) => s.read({ path: "README.md" }))).toBe("1\t# readme\n2\tsee src/main.ts\n3\t")
     expect(await run((s) => s.read({ path: "src/main.ts", startLine: 10, endLine: 11 }))).toBe("10\texport const line10 = 10\n11\texport const line11 = 11")
     expect(await refusal((s) => s.read({ path: "src/main.ts", startLine: 90 }))).toContain("has 50 lines")
+    // an inverted range is refused, not answered with nothing
+    expect(await refusal((s) => s.read({ path: "src/main.ts", startLine: 3, endLine: 1 }))).toContain("endLine 1 is before startLine 3")
   })
 
   test("a long read stops at the output cap and says where to go on", async () => {
@@ -110,6 +112,11 @@ describe("searching and listing", () => {
     const found = await run((s) => s.grep({ pattern: "export const" }))
     expect(found.split("\n").filter((l) => l.startsWith("src/main.ts:"))).toHaveLength(LIMITS.maxResults)
     expect(found).toContain("narrow the path or glob")
+  })
+
+  test("search and listing take a file as their path too", async () => {
+    expect(await run((s) => s.grep({ pattern: "helper", path: "src/deep/util.py" }))).toBe("src/deep/util.py:1: def helper():")
+    expect(await run((s) => s.list({ path: "README.md" }))).toBe("README.md")
   })
 
   test("a walk stops at maxEntries", async () => {

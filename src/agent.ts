@@ -270,6 +270,8 @@ const tools = (sandbox: Sandbox.Sandbox, context: Context.Context<never>) => {
   }
 }
 
+const OUTPUT_TOKENS: Record<Request["effort"], number> = { low: 16_000, medium: 32_000, high: 64_000 }
+
 const reviewOutput = Output.object({ name: "review", description: "the review of the diff", schema: sdkSchema(ChunkReview, true) })
 
 /** `connect`: where the api agent's models come from. tests hand in a mock */
@@ -458,7 +460,8 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
           prompt: request.prompt,
           output: reviewOutput,
           reasoning: request.effort,
-          maxOutputTokens: 16_000,
+          // openai counts reasoning against it too: a deeper review gets more room to think and still answer
+          maxOutputTokens: OUTPUT_TOKENS[request.effort],
           maxRetries: 2,
           abortSignal: signal,
           ...(sandbox

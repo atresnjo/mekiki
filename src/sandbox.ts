@@ -134,6 +134,7 @@ export const make = Effect.fn("Sandbox.make")(function* (root: string, limits: L
     const start = Math.max(1, Math.floor(input.startLine ?? 1))
     const end = Math.min(lines.length, Math.floor(input.endLine ?? lines.length))
     if (start > lines.length) return yield* fail(`${rel} has ${lines.length} lines`)
+    if (end < start) return yield* fail(`${rel}: endLine ${end} is before startLine ${start}`)
     const out: Array<string> = []
     let size = 0
     for (let n = start; n <= end; n++) {

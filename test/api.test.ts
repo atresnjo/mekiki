@@ -150,7 +150,8 @@ describe("the api agent", () => {
     const model = new MockLanguageModelV4({ doGenerate: async () => toolCall("list_files", {}) })
     const { result } = await withAgent(model, (agent) => agent.review(request(true)).pipe(Effect.flip), { api: { maxSteps: 2 } })
     expect(result).toBeInstanceOf(AgentError)
-    expect(model.doGenerateCalls.length).toBeLessThanOrEqual(2)
+    // the cap held: the last call it got had no tools to call
+    expect(model.doGenerateCalls.map((c) => (c.tools ?? []).length)).toEqual([3, 0])
     expect(result.usage?.calls).toBe(model.doGenerateCalls.length)
   })
 
@@ -224,6 +225,34 @@ describe("the api agent", () => {
     expect(await why({ model: "" })).toBe("set GLANCE_API_MODEL")
     expect(await why({ key: Option.none() })).toBe("set ANTHROPIC_API_KEY")
     expect(await why({ provider: Option.some("google"), key: Option.none() })).toBe("set GOOGLE_GENERATIVE_AI_API_KEY")
+  })
+})
+
+describe("providers and prices", () => {
+  test("each provider gets its own model; a gateway is spoken to over chat completions", () => {
+    const at = (provider: Agent.Provider, baseUrl?: string) => {
+      const model = Agent.connect(api({ provider: Option.some(provider), baseUrl: Option.fromUndefinedOr(baseUrl) }))("some-model")
+      return typeof model === "string" ? model : `${model.provider} ${model.modelId}`
+    }
+    expect(at("openai")).toBe("openai.responses some-model")
+    expect(at("openai", "https://openrouter.ai/api/v1")).toBe("openai.chat some-model")
+    expect(at("anthropic")).toBe("anthropic.messages some-model")
+    expect(at("google")).toBe("google.generative-ai some-model")
+  })
+
+  test("a gateway's or a snapshot's name finds its price; GLANCE_PRICES adds and replaces entries", () => {
+    const tokens = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 }
+    // 1M fresh at $2, 1M cached at $0.20, 1M out at $10
+    for (const name of ["claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "claude-sonnet-5-5-20260901"]) expect(estimate(name, tokens)).toBeCloseTo(12.2, 6)
+    expect(estimate("gpt-6-sol-2026-09-01", tokens)).toBeCloseTo(2 + 0.1 + 10, 6)
+    expect(estimate("unknown-model", tokens)).toBeNull()
+    const { prices } = configFrom({
+      GLANCE_PRICES: JSON.stringify({ "my-model": { input: 1, cachedInput: 0, output: 1 }, "claude-sonnet-5-5": { input: 0, cachedInput: 0, output: 0 } }),
+    }).agent
+    expect(estimate("my-model", tokens, prices)).toBeCloseTo(2, 6)
+    expect(estimate("claude-sonnet-5-5", tokens, prices)).toBe(0)
+    expect(estimate("claude-opus-5-5", tokens, prices)).toBeCloseTo(4 + 0.2 + 20, 6)
+    expect(() => configFrom({ GLANCE_PRICES: "{not json" })).toThrow()
   })
 })
 
