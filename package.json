@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run dev:api & bun run dev:web; wait",
-    "dev:api": "bun --hot src/main.ts",
+    "dev:api": "bun --watch src/main.ts",
     "dev:web": "vite web",
     "build": "vite build web",
     "start": "bun src/main.ts",
