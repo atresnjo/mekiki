@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { Config, Redacted } from "effect"
 import type { Settings } from "./domain.ts"
 
@@ -81,7 +82,11 @@ export const AppConfig = Config.all({
   }),
   /** the code each review reads: one directory per commit */
   checkouts: Config.all({
-    dir: Config.String("GLANCE_CHECKOUTS").pipe(Config.withDefault(".data/checkouts")),
+    // absolute: an agent runs in a directory of its own and is handed the checkout's path
+    dir: Config.String("GLANCE_CHECKOUTS").pipe(
+      Config.withDefault(".data/checkouts"),
+      Config.map((dir) => resolve(dir)),
+    ),
     /** a repository bigger than this isn't downloaded, by git or as a tarball */
     maxMegabytes: Config.Int("MAX_REPO_MB").pipe(Config.withDefault(500)),
     keep: Config.Int("KEEP_CHECKOUTS").pipe(Config.withDefault(30)),

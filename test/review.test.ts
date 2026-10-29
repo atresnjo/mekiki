@@ -273,3 +273,8 @@ test("a repository is added as owner/repo, typed or pasted as a github link", ()
   expect(repoIn("github.com/acme/api.git")).toBe("acme/api")
   expect(repoIn("https://gitlab.com/acme/api")).toBe("https://gitlab.com/acme/api")
 })
+
+test("the checkouts directory is absolute, so an agent started elsewhere finds the code", () => {
+  expect(configFrom({}).checkouts.dir).toBe(`${process.cwd()}/.data/checkouts`)
+  expect(configFrom({ GLANCE_CHECKOUTS: "/data/checkouts" }).checkouts.dir).toBe("/data/checkouts")
+})

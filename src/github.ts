@@ -321,10 +321,10 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
 
   const tokenFor = auth.tokenFor
   // the list changes when someone installs the app on another repository: five minutes. a failure isn't kept
-  const repositoryList = yield* Cache.makeWith(
-    () => auth.repositories.pipe(Effect.map((repos) => [...new Set(repos.map((r) => r.toLowerCase()))].sort())),
-    { capacity: 1, timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(5) : Duration.zero) },
-  )
+  const repositoryList = yield* Cache.makeWith(() => auth.repositories.pipe(Effect.map((repos) => [...new Set(repos.map((r) => r.toLowerCase()))].sort())), {
+    capacity: 1,
+    timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(5) : Duration.zero),
+  })
 
   if (Option.isSome(appId) !== Option.isSome(privateKey))
     return yield* new GitHubError({ operation: "auth", message: "a github app needs both GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY (or _FILE)" })
