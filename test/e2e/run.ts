@@ -182,16 +182,26 @@ try {
     }
   }
   await page.getByRole("button", { name: "Settings" }).click()
-  await page.getByRole("tab", { name: "Rules" }).click()
-  await page.getByLabel("Team rules").fill("We use Effect: never throw.")
-  await page.getByRole("tab", { name: "Repositories" }).click()
+  const sections = page.getByRole("navigation", { name: "Settings sections" })
+  await expect(sections).toBeVisible()
+  // past the dialog's opening animation
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: join(artifacts, "settings.png") })
+  // one page: a section in the list scrolls to it, and the list follows what's being read
+  await sections.getByRole("button", { name: "Repositories" }).click()
+  await expect(page.getByRole("heading", { name: "Repositories" })).toBeInViewport()
+  await expect(sections.getByRole("button", { name: "Repositories" })).toHaveAttribute("aria-current", "true")
+  record("settings sections scroll into view and the list marks the one being read")
+  await sections.getByRole("button", { name: "Team rules" }).click()
+  await page.getByRole("textbox", { name: "Team rules" }).fill("We use Effect: never throw.")
+  await sections.getByRole("button", { name: "Repositories" }).click()
   // a repository glance has reviewed is suggested
   await page.getByLabel("Add a repository").fill("acme")
   await page.getByRole("option", { name: "acme/api" }).click()
   await page.getByRole("button", { name: "Add", exact: true }).click()
-  // the repository's own blocked authors: the global ones are on the rules tab
-  await page.getByLabel("Blocked authors").fill("dependabot[bot]")
-  await page.getByLabel("Blocked authors").press("Enter")
+  // the repository's own blocked authors: the global ones come first on the page
+  await page.getByLabel("Blocked authors").last().fill("dependabot[bot]")
+  await page.getByLabel("Blocked authors").last().press("Enter")
   await page.screenshot({ path: join(artifacts, "repo-settings.png") })
   await page.getByRole("button", { name: "Save" }).click()
   await expect(page.getByText("Settings saved")).toBeVisible()
