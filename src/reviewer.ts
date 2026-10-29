@@ -112,6 +112,13 @@ const FINDING = /<!-- glance:finding (\w+) (\S*) -->/
 /** hidden in glance's "fixed" reply: a thread it resolved once, and someone reopened, is left to them */
 const FIXED = "<!-- glance:fixed -->"
 
+/** why files weren't reviewed, counted: "5 binary, 1 generated or lockfile" */
+export const skippedSummary = (skipped: ReadonlyArray<{ readonly reason: string }>) => {
+  const counts = new Map<string, number>()
+  for (const { reason } of skipped) counts.set(reason, (counts.get(reason) ?? 0) + 1)
+  return [...counts].map(([reason, n]) => `${n} ${reason}`).join(", ")
+}
+
 /** a suggestion block that holds any text: its fence is longer than every run of backticks inside */
 export const suggestionBlock = (text: string) => {
   const fence = "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)))
@@ -291,10 +298,15 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
     if (options.automatic && pr.draft) return yield* new Skip({ reason: "draft pull request" })
     if (pr.state !== "open" && options.automatic) return yield* new Skip({ reason: `pull request is ${pr.state}` })
 
-    // after the first review, review only what was pushed since: fewer tokens, no repeated findings
+    const select = (text: string) =>
+      Diff.select(Diff.parseDiff(text), { maxTotalChars: limits.maxDiffChars, maxFileChars: limits.maxFileChars, exclude: settings.exclude })
+
+    // after the first review, a push is reviewed as what was pushed since: fewer tokens, no repeated
+    // findings. someone asking for another depth wants the whole pull request looked at again
     let diff = fullDiff
     let incremental = false
-    if (Option.isSome(previous) && previous.value.headSha) {
+    const sameDepth = Option.isSome(previous) && previous.value.depth === settings.depth
+    if (Option.isSome(previous) && previous.value.headSha && (options.automatic || sameDepth)) {
       if (previous.value.headSha === pr.head.sha) {
         if (options.automatic) return yield* new Skip({ reason: "this commit was already reviewed" })
       } else {
@@ -303,17 +315,27 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
         const since = yield* timed("compare", github.compare(ref, previous.value.headSha, pr.head.sha)).pipe(Effect.option)
         if (Option.isSome(since)) {
           // a merge from the base branch brings in commits that aren't this pull request's
-          diff = Diff.restrictTo(since.value, prPaths)
-          incremental = true
-          if (!diff.trim()) return yield* new Skip({ reason: "no changes to this pull request's files since the last review" })
+          const pushed = Diff.restrictTo(since.value, prPaths)
+          const nothing = !pushed.trim() || select(pushed).selected.length === 0
+          // nothing to read in what was pushed (screenshots, a lockfile): a push stays quiet, someone asking gets the whole pull request
+          if (!nothing || options.automatic) {
+            diff = pushed
+            incremental = true
+          }
+          if (nothing && options.automatic) {
+            const { skipped } = select(pushed)
+            yield* save(id, { files: 0, skippedFiles: skipped.length, incremental: true, steps: [...steps] })
+            return yield* new Skip({ reason: `nothing to review since the last review${skipped.length > 0 ? `: ${skippedSummary(skipped)}` : ""}` })
+          }
         }
       }
     }
 
-    const files = Diff.parseDiff(diff)
-    const { selected, skipped } = Diff.select(files, { maxTotalChars: limits.maxDiffChars, maxFileChars: limits.maxFileChars, exclude: settings.exclude })
-    if (selected.length === 0)
-      return yield* new Skip({ reason: skipped.length > 0 ? "every changed file was skipped (generated, binary, excluded or too large)" : "no changes" })
+    const { selected, skipped } = select(diff)
+    if (selected.length === 0) {
+      yield* save(id, { files: 0, skippedFiles: skipped.length, incremental, steps: [...steps] })
+      return yield* new Skip({ reason: skipped.length > 0 ? `nothing to review: ${skippedSummary(skipped)}` : "no changes" })
+    }
 
     const chunks = Diff.chunk(selected, limits.chunkChars)
     yield* save(id, { files: selected.length, skippedFiles: skipped.length, chunks: chunks.length, incremental, steps: [...steps] })

@@ -13,7 +13,7 @@ The agent gets the diff **and the repository**: every review downloads the code 
 - **Everything overlaps.** The pull request, its diff, the code and the last review load in parallel; every chunk goes to its own agent process at once (`AGENT_CONCURRENCY`, shared across reviews).
 - **Big chunks.** Files are packed first-fit-decreasing into 150k-character chunks, so most pull requests are a single call.
 - **Plain code for the rest.** Lockfiles, generated files, binaries and your exclude patterns are dropped before the model sees anything; comments are pinned to lines GitHub accepts, filtered by confidence, de-duplicated and capped without a second model call.
-- **Incremental follow-ups.** After the first review, a push is reviewed as `last-reviewed...head`, restricted to the pull request's files.
+- **Incremental follow-ups.** After the first review, a push is reviewed as `last-reviewed...head`, restricted to the pull request's files. A push with nothing to read in it (screenshots, a lockfile) is skipped; ticking another depth, or asking when nothing new can be read, reviews the whole pull request again.
 - **One write.** All inline comments go out in a single GitHub review. Alongside it, one GraphQL read finds glance's threads whose problem is gone, decided by plain code, not another model call.
 
 Measured end to end, light depth: [miracodeai/mira#353](https://github.com/miracodeai/mira/pull/353) (2 files) with Claude Code in 7.4s, 2.7s of it waiting on the 5 MB download; the same commit at high in 11.1s with the code already on disk; [#349](https://github.com/miracodeai/mira/pull/349) (22 files) with Codex in 30.9s.
