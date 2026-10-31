@@ -128,11 +128,12 @@ export const loadOlder = Glance.runtime.fn(
   }),
 )
 
-/** the reviews in the feed and the older pages loaded: empty until it connects */
-export const useReviews = () => {
+/** the reviews in the feed and the older pages loaded: undefined until it connects, so pages can show a skeleton */
+export const useReviews = (): ReadonlyArray<Review> | undefined => {
   const feed = useValue(feedAtom)
   const older = useAtomValue(olderAtom)
-  const live = feed && feed._tag !== "Locked" ? feed.reviews : []
+  if (!feed) return undefined
+  const live = feed._tag !== "Locked" ? feed.reviews : []
   if (older.reviews.length === 0) return live
   const ids = new Set(live.map((r) => r.id))
   return [...live, ...older.reviews.filter((r) => !ids.has(r.id))]

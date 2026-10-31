@@ -1,6 +1,5 @@
 import { useAtomSet } from "@effect/atom-react"
 import { Banner } from "@cloudflare/kumo/components/banner"
-import { Loader } from "@cloudflare/kumo/components/loader"
 import { createRootRoute, Outlet } from "@tanstack/react-router"
 import { Header, SignIn, StartForm } from "../components/shell.tsx"
 import { report } from "../components/ui.tsx"
@@ -35,13 +34,8 @@ function Root() {
               description="Install and log in to Claude Code (claude) or Codex (codex) on this machine: glance runs reviews through them on your subscription."
             />
           )}
-          {feed ? (
-            <Outlet />
-          ) : (
-            <div className="flex justify-center py-24">
-              <Loader size="lg" />
-            </div>
-          )}
+          {/* each page draws its own skeleton until the feed connects */}
+          <Outlet />
         </>
       )}
     </div>

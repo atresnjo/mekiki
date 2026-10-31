@@ -5,6 +5,7 @@ import { type LinkComponentProps, LinkProvider } from "@cloudflare/kumo/utils"
 import { createRouter, Link, RouterProvider } from "@tanstack/react-router"
 import { forwardRef, StrictMode } from "react"
 import { createRoot } from "react-dom/client"
+import { SkulletProvider } from "skullet/react"
 import { toasts } from "./lib/toasts.ts"
 import { routeTree } from "./routeTree.gen.ts"
 
@@ -31,7 +32,10 @@ if (root)
         <LinkProvider component={AppLink}>
           <TooltipProvider>
             <Toasty toastManager={toasts}>
-              <RouterProvider router={router} />
+              {/* theme.js sets data-mode from the system setting, so the skeletons follow it the same way */}
+              <SkulletProvider mode="system" theme={{ radius: "6px" }}>
+                <RouterProvider router={router} />
+              </SkulletProvider>
             </Toasty>
           </TooltipProvider>
         </LinkProvider>

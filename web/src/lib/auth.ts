@@ -2,6 +2,7 @@
 // company's sso both leave the page and come back to "/", with ?error=… when it didn't work
 import { ssoClient } from "@better-auth/sso/client"
 import { createAuthClient } from "better-auth/client"
+import { forgetShapes } from "skullet"
 
 const client = createAuthClient({ baseURL: window.location.origin, basePath: "/api/auth", plugins: [ssoClient()] })
 
@@ -23,7 +24,12 @@ export const signInWith = async (provider: "github" | "sso"): Promise<string | n
   return result.error ? (result.error.message ?? `sign-in failed (${result.error.status})`) : null
 }
 
-export const signOut = () => client.signOut().then(() => window.location.assign("/"))
+/** the pages' remembered skeleton shapes are layout only, but they're the last person's: dropped too */
+export const signOut = () =>
+  client.signOut().then(() => {
+    forgetShapes()
+    window.location.assign("/")
+  })
 
 const REASONS: Record<string, string> = {
   not_allowed: "That account isn't allowed into this glance. Ask whoever runs it to add your address or organization.",

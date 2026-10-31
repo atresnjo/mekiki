@@ -8,6 +8,7 @@ import { Icon, menuIcon } from "./icon.tsx"
 import { lazy, type ReactNode, Suspense, useState } from "react"
 import { Link } from "@tanstack/react-router"
 import { useAtomSet } from "@effect/atom-react"
+import { SkeletonBox } from "skullet/react"
 import { loadOlder, type Review, useMoreToLoad } from "../lib/glance.ts"
 import { change, type Metric, metric, RANGES, type Range } from "../lib/metrics.ts"
 import { ReviewsTable } from "./table.tsx"
@@ -193,7 +194,8 @@ const NoData = ({ height }: { height: number }) => (
   </div>
 )
 
-const Skeleton = ({ height }: { height: number }) => <div className="animate-pulse rounded-md bg-kumo-recessed" style={{ height }} />
+/** while the charts chunk loads: the same shimmer as the page skeletons */
+const ChartSkeleton = ({ height }: { height: number }) => <SkeletonBox className="block" width="100%" height={height} radius="6px" />
 
 const CardHeader = ({ title, m, format, good, menu }: { title: string; m: Metric; format: (n: number) => string; good: Good; menu: ReactNode }) => (
   <div className="flex items-start justify-between gap-2">
@@ -250,7 +252,7 @@ const BigCard = ({ title, metric: m, format, good }: { title: string; metric: Me
         {empty(m) ? (
           <NoData height={190} />
         ) : (
-          <Suspense fallback={<Skeleton height={190} />}>
+          <Suspense fallback={<ChartSkeleton height={190} />}>
             <AreaChart name={title} data={m.series} dark={dark} format={format} type={type} />
           </Suspense>
         )}
@@ -297,7 +299,7 @@ const SmallCard = ({
           {empty(m) ? (
             <NoData height={120} />
           ) : (
-            <Suspense fallback={<Skeleton height={120} />}>
+            <Suspense fallback={<ChartSkeleton height={120} />}>
               <Sparkline name={title} data={m.series} dark={dark} format={format} />
             </Suspense>
           )}
