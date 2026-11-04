@@ -43,7 +43,7 @@ import {
   type Settings,
   settingsAtom,
   useValue,
-} from "../lib/glance.ts"
+} from "../lib/mekiki.ts"
 import { type Glyph, Icon } from "./icon.tsx"
 import { AGENT_NAMES, DEPTHS, DepthPicker, depthLabel, report } from "./ui.tsx"
 
@@ -55,9 +55,9 @@ const webhookUrl = new URL("/api/webhooks/github", window.location.origin).href
 
 /** the dialog is one page: these are its sections, in order, and what the list on the left jumps to */
 const SECTIONS = [
-  { id: "reviews", label: "Reviews", icon: SlidersHorizontalIcon, hint: "When glance reviews, and how hard it looks." },
+  { id: "reviews", label: "Reviews", icon: SlidersHorizontalIcon, hint: "When mekiki reviews, and how hard it looks." },
   { id: "agent", label: "Agent", icon: Robot01Icon, hint: "Who reviews, on which model: a CLI on its subscription, or a model on an API key." },
-  { id: "comments", label: "Comments", icon: Comment01Icon, hint: "How much glance says on a pull request." },
+  { id: "comments", label: "Comments", icon: Comment01Icon, hint: "How much mekiki says on a pull request." },
   { id: "rules", label: "Team rules", icon: LegalDocument01Icon, hint: "What your team cares about, in plain language." },
   { id: "authors", label: "Authors", icon: UserMultiple02Icon, hint: "Whose pull requests are reviewed on their own." },
   { id: "files", label: "Files", icon: FileBlockIcon, hint: "What's never reviewed." },
@@ -73,7 +73,9 @@ interface Draft {
 
 const MODES = { ask: "Ask with checkboxes", auto: "Review right away" }
 
-export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
+/** `offered`: the agents the server reviews with (only the api agent when its clis are off) */
+export const SettingsDialog = ({ webhook, offered }: { webhook: boolean; offered: ReadonlyArray<Settings["agent"]> | undefined }) => {
+  const agents = offered ? Object.fromEntries(Object.entries(AGENT_NAMES).filter(([key]) => offered.includes(key as Settings["agent"]))) : AGENT_NAMES
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState<SectionId>("reviews")
   const page = useRef<HTMLDivElement>(null)
@@ -187,7 +189,7 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
                 <Section id="reviews">
                   <Row
                     label="Depth"
-                    description={`${DEPTHS.find((d) => d.value === draft.settings.depth)?.hint ?? ""}. Pick another per pull request in glance's comment.`}
+                    description={`${DEPTHS.find((d) => d.value === draft.settings.depth)?.hint ?? ""}. Pick another per pull request in mekiki's comment.`}
                   >
                     <DepthPicker value={draft.settings.depth} onChange={(d) => set("depth", d)} />
                   </Row>
@@ -207,7 +209,7 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
                     label="Other ways to start one"
                     description={
                       <>
-                        Comment <code>/glance high</code> or add a <code>glance:high</code> label. Needs write access to the repository.
+                        Comment <code>/mekiki high</code> or add a <code>mekiki:high</code> label. Needs write access to the repository.
                       </>
                     }
                   />
@@ -227,13 +229,14 @@ export const SettingsDialog = ({ webhook }: { webhook: boolean }) => {
                       value={draft.settings.agent}
                       // each agent has its own models: start the new one on its default
                       onValueChange={(v) => v && v !== draft.settings.agent && patch({ agent: v as Settings["agent"], model: "" })}
-                      items={AGENT_NAMES}
+                      items={agents}
+                      disabled={Object.keys(agents).length < 2}
                     />
                   </Row>
                   <Row
                     label="Model"
                     description={
-                      draft.settings.agent === "api" ? "Default is GLANCE_API_MODEL; GLANCE_API_MODELS adds more." : "Default is whatever the CLI picks."
+                      draft.settings.agent === "api" ? "Default is MEKIKI_API_MODEL; MEKIKI_API_MODELS adds more." : "Default is whatever the CLI picks."
                     }
                   >
                     <ModelSelect draft={draft.settings} onChange={(model) => set("model", model)} />
@@ -399,7 +402,7 @@ const RulesField = ({ value, onChange, repo }: FieldProps) => {
 }
 
 const AuthorFields = ({ value, onChange, repo, row }: FieldProps) => {
-  const blocked = `Their pull requests are never reviewed on their own and get no comment. /glance, a label or the dashboard still review them.${added(repo)}`
+  const blocked = `Their pull requests are never reviewed on their own and get no comment. /mekiki, a label or the dashboard still review them.${added(repo)}`
   const allowed = `In auto mode, only these authors are reviewed right away; the rest get the checkboxes. Empty: everyone.${added(repo)}`
   const tags = (label: string, key: "blockedAuthors" | "allowedAuthors", placeholder: string, description: string) => (
     <TagInput

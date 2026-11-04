@@ -27,20 +27,20 @@ export interface Interface {
   readonly repoSettings: Effect.Effect<ReadonlyArray<RepoSettings>, StoreError>
   readonly saveRepoSettings: (settings: RepoSettings) => Effect.Effect<RepoSettings, StoreError>
   readonly deleteRepoSettings: (repo: string) => Effect.Effect<void, StoreError>
-  /** the repositories glance has reviewed, by name: what the dashboard suggests */
+  /** the repositories mekiki has reviewed, by name: what the dashboard suggests */
   readonly reviewedRepos: Effect.Effect<ReadonlyArray<string>, StoreError>
-  /** the id of glance's comment on a pull request */
+  /** the id of mekiki's comment on a pull request */
   readonly panel: (repo: string, number: number) => Effect.Effect<Option.Option<number>, StoreError>
   readonly savePanel: (repo: string, number: number, commentId: number) => Effect.Effect<void, StoreError>
   /** remember a webhook delivery: false when it was seen before (github redelivers on request) */
   readonly claimDelivery: (id: string) => Effect.Effect<boolean, StoreError>
-  /** handling it failed on glance's side: a redelivery should be acted on */
+  /** handling it failed on mekiki's side: a redelivery should be acted on */
   readonly releaseDelivery: (id: string) => Effect.Effect<void, StoreError>
   /** the database answers */
   readonly ping: Effect.Effect<void, StoreError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Store") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Store") {}
 
 export class StoreError extends Schema.TaggedError<StoreError>()("StoreError", {
   operation: Schema.String,
@@ -57,8 +57,15 @@ const decodeReview = Schema.decodeUnknownEffect(Review)
 const decodeSettings = Schema.decodeUnknownEffect(Settings)
 const decodeRepoSettings = Schema.decodeUnknownEffect(RepoSettings)
 
-export const make = Effect.fn("Store.make")(function* (options: { readonly defaults: Settings }) {
+export interface Options {
+  readonly defaults: Settings
+  /** the clis are offered (the default). off: settings that name one read as the api agent on its default model */
+  readonly clis?: boolean | undefined
+}
+
+export const make = Effect.fn("Store.make")(function* (options: Options) {
   const db = yield* Database.Service
+  const offered = (settings: Settings): Settings => (options.clis === false && settings.agent !== "api" ? { ...settings, agent: "api", model: "" } : settings)
 
   // Persisted JSON can outlive the version that wrote it: validate it when reading.
   const toReview = (row: typeof reviews.$inferSelect) => decodeReview({ ...row.data, id: row.id }).pipe(query("decodeReview"))
@@ -134,7 +141,7 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
       Effect.catch(() => decodeSettings({ ...options.defaults, ...row.data })),
       Effect.orElseSucceed(() => options.defaults),
     )
-  }).pipe(Effect.withSpan("Store.settings"))
+  }).pipe(Effect.map(offered), Effect.withSpan("Store.settings"))
 
   const saveSettings = Effect.fn("Store.saveSettings")(function* (next: Settings) {
     yield* db
@@ -246,6 +253,6 @@ export const make = Effect.fn("Store.make")(function* (options: { readonly defau
   })
 })
 
-export const layer = (options: { readonly defaults: Settings }) => Layer.effect(Service, make(options))
+export const layer = (options: Options) => Layer.effect(Service, make(options))
 
 export * as Store from "./store.ts"

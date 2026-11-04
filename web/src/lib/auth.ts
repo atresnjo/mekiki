@@ -32,7 +32,7 @@ export const signOut = () =>
   })
 
 const REASONS: Record<string, string> = {
-  not_allowed: "That account isn't allowed into this glance. Ask whoever runs it to add your address or organization.",
+  not_allowed: "That account isn't allowed into this mekiki. Ask whoever runs it to add your address or organization.",
   access_denied: "Signing in was cancelled.",
   account_not_linked: "That address already belongs to someone who signed in another way: use that.",
 }

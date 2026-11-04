@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "glance",
+      "name": "mekiki",
       "dependencies": {
         "@ai-sdk/anthropic": "4.0.84",
         "@ai-sdk/google": "4.0.101",

@@ -53,7 +53,7 @@ const CommentEvent = Schema.Struct({
   sender: Sender,
 })
 
-/** a `glance:<depth>` label pins the depth every review of that pull request runs at */
+/** a `mekiki:<depth>` label pins the depth every review of that pull request runs at */
 const labelDepth = (labels: ReadonlyArray<{ readonly name: string }> | undefined) => (labels ?? []).map((l) => depthIn(l.name)).find((d) => d !== undefined)
 
 const depthOverride = (depth: Depth | undefined) => (depth ? { depth } : {})
@@ -77,8 +77,8 @@ const readCapped = (request: HttpServerRequest.HttpServerRequest, max: number) =
 const decodeJson = <S extends Schema.Top & { readonly DecodingServices: never }>(schema: S) => Schema.decodeUnknownEffect(Schema.fromJsonString(schema))
 
 const REVIEW_ACTIONS = new Set(["opened", "synchronize", "reopened", "ready_for_review"])
-/** `/glance` or `@glance`, optionally with a depth: `/glance high` */
-const COMMAND = /(^|\s)(\/glance|@glance)\b/i
+/** `/mekiki` or `@mekiki`, optionally with a depth: `/mekiki high` */
+const COMMAND = /(^|\s)(\/mekiki|@mekiki)\b/i
 
 const handlers = (config: AppConfig) =>
   Effect.gen(function* () {
@@ -110,7 +110,7 @@ const handlers = (config: AppConfig) =>
         const ref = { owner: payload.repository.owner.login, repo: payload.repository.name, number: payload.number }
         if (payload.action === "closed") yield* reviewer.cancel(ref)
         else if (payload.action === "labeled" && payload.label && depthIn(payload.label.name)) {
-          // adding glance:high is asking for a review at that depth, now
+          // adding mekiki:high is asking for a review at that depth, now
           const depth = depthIn(payload.label.name)
           const verdict = yield* triggers.allow(ref, payload.sender)
           if (!verdict.ok) return yield* refused(verdict, payload.sender)
@@ -121,7 +121,7 @@ const handlers = (config: AppConfig) =>
           const settings = yield* store.settingsFor(`${ref.owner}/${ref.repo}`)
           const author = payload.pull_request.user
           // a blocked author's pull request (a dependency bot's, say) is left alone: no review, no comment.
-          // a /glance comment, a label or the dashboard still reviews it
+          // a /mekiki comment, a label or the dashboard still reviews it
           if (listsAuthor(settings.blockedAuthors, author.login)) {
             yield* Effect.logInfo(`not reviewing ${prKey(ref)}: ${author.login} is a blocked author`)
             return json({ ok: true, reviewing: false, blocked: author.login })
@@ -168,9 +168,9 @@ const handlers = (config: AppConfig) =>
         const ticked =
           payload.action === "edited" && payload.issue.pull_request !== undefined ? tickedDepth(payload.comment.body, payload.changes?.body?.from) : undefined
         if (ticked) {
-          // a box ticked in glance's comment, and only glance's: a copy of the panel elsewhere ticks nothing
+          // a box ticked in mekiki's comment, and only mekiki's: a copy of the panel elsewhere ticks nothing
           const panelId = yield* store.panel(`${ref.owner}/${ref.repo}`, ref.number)
-          if (Option.getOrUndefined(panelId) !== payload.comment.id) return json({ ok: true, reviewing: false, refused: "not glance's comment" })
+          if (Option.getOrUndefined(panelId) !== payload.comment.id) return json({ ok: true, reviewing: false, refused: "not mekiki's comment" })
           const verdict = yield* triggers.allow(ref, payload.sender)
           if (!verdict.ok) return yield* refused(verdict, payload.sender)
           // review at that depth. the panel unticks it as it starts
@@ -202,8 +202,8 @@ const handlers = (config: AppConfig) =>
       return json({ ok: true, reviewing: false })
     })
 
-    /** glance's own failure: logged, and github sees a 500 (and shows it in the delivery log) */
-    const failed = (cause: unknown) => Effect.logError("webhook failed", cause).pipe(Effect.as(problem(500, "glance failed handling this delivery")))
+    /** mekiki's own failure: logged, and github sees a 500 (and shows it in the delivery log) */
+    const failed = (cause: unknown) => Effect.logError("webhook failed", cause).pipe(Effect.as(problem(500, "mekiki failed handling this delivery")))
 
     const webhook = Effect.fn("Webhook.github")(
       function* (request: HttpServerRequest.HttpServerRequest) {
@@ -218,7 +218,7 @@ const handlers = (config: AppConfig) =>
         if (!delivery) return yield* handle(event, body)
         // github redelivers on request (and sometimes on its own): each delivery is acted on once
         if (!(yield* store.claimDelivery(delivery))) return json({ ok: true, duplicate: true })
-        // glance failed handling it: let go of it, so a redelivery is acted on
+        // mekiki failed handling it: let go of it, so a redelivery is acted on
         const release = store
           .releaseDelivery(delivery)
           .pipe(Effect.catchTag("StoreError", (error) => Effect.logError("couldn't release webhook delivery", error)))

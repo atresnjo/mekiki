@@ -13,22 +13,22 @@ import { Link, useNavigate } from "@tanstack/react-router"
 import { Exit } from "effect"
 import { type FormEvent, useEffect, useState } from "react"
 import { type Methods, methods, signInWith, signOut, takeSignInError } from "../lib/auth.ts"
-import { type Depth, type Review, startReview, type Status, type User } from "../lib/glance.ts"
+import { type Depth, type Review, startReview, type Status, type User } from "../lib/mekiki.ts"
 import { Icon, menuIcon } from "./icon.tsx"
 import { SettingsDialog } from "./settings.tsx"
 import { UsageMenu } from "./usage.tsx"
 import { DepthPicker, report } from "./ui.tsx"
 
 const AGENTS = [
-  { key: "claude", name: "Claude Code", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "claude", " where glance runs."] },
-  { key: "codex", name: "Codex", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "codex login", " where glance runs."] },
+  { key: "claude", name: "Claude Code", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "claude", " where mekiki runs."] },
+  { key: "codex", name: "Codex", ready: "Logged in", down: "Not installed or logged out", fix: ["Run ", "codex login", " where mekiki runs."] },
   // opt in: one not set up isn't a problem, only a choice not made
   {
     key: "api",
     name: "API key",
     ready: "Key set",
     down: "Not set up",
-    fix: ["Set ", "GLANCE_API_PROVIDER", ", its model and key on the server."],
+    fix: ["Set ", "MEKIKI_API_PROVIDER", ", its model and key on the server."],
     optional: true,
   },
 ] as const
@@ -43,11 +43,13 @@ const Dot = ({ ok, pulse }: { ok: boolean; pulse?: boolean }) => (
  * and the detail is a click away
  */
 const Health = ({ status, live }: { status: Status | undefined; live: boolean }) => {
-  const down = status ? AGENTS.filter((a) => !status.agents[a.key] && !("optional" in a)) : []
+  // the clis can be off on the server: then they're not there to be logged out of
+  const agents = status ? AGENTS.filter((a) => status.offered.includes(a.key)) : AGENTS
+  const down = status ? agents.filter((a) => !status.agents[a.key] && !("optional" in a)) : []
   const problems = [...down.map((a) => `${a.name} logged out`), ...(live ? [] : ["Reconnecting…"])]
   const ok = problems.length === 0
-  const ready = status ? AGENTS.filter((a) => status.agents[a.key]).length : 0
-  const long = !status ? "Checking…" : ok ? `${ready} agents ready` : problems.join(" · ")
+  const ready = status ? agents.filter((a) => status.agents[a.key]).length : 0
+  const long = !status ? "Checking…" : ok ? `${ready} agent${ready === 1 ? "" : "s"} ready` : problems.join(" · ")
   const short = ok ? "Ready" : `${problems.length} issue${problems.length === 1 ? "" : "s"}`
   return (
     <Popover>
@@ -67,7 +69,7 @@ const Health = ({ status, live }: { status: Status | undefined; live: boolean })
       </Popover.Trigger>
       <Popover.Content align="end" className="w-72 p-1 text-[13px]">
         <div className="px-2.5 pt-2 pb-1.5 text-[11px] font-medium text-kumo-inactive">Agents</div>
-        {AGENTS.map((agent) => {
+        {agents.map((agent) => {
           const version = status?.agents[agent.key]
           return (
             <div key={agent.key}>
@@ -99,13 +101,13 @@ const Health = ({ status, live }: { status: Status | undefined; live: boolean })
   )
 }
 
-/** where you are on the left (glance / Reviews); on the right, how things stand, then settings and you. signed out: just the name */
+/** where you are on the left (mekiki / Reviews); on the right, how things stand, then settings and you. signed out: just the name */
 export const Header = ({ status, live, signedOut }: { status: Status | undefined; live: boolean; signedOut?: boolean }) => (
   <header className="flex h-10 items-center justify-between gap-3">
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
       <Link to="/" className="flex items-center gap-1.5">
         <Icon icon={FlashIcon} size={18} strokeWidth={2} className="text-kumo-brand" />
-        <span className="text-[15px] font-semibold tracking-tight text-kumo-strong">glance</span>
+        <span className="text-[15px] font-semibold tracking-tight text-kumo-strong">mekiki</span>
       </Link>
       <span aria-hidden className="hidden text-lg font-light text-kumo-inactive sm:inline">
         /
@@ -116,10 +118,11 @@ export const Header = ({ status, live, signedOut }: { status: Status | undefined
     </nav>
     {!signedOut && (
       <div className="flex items-center gap-1">
-        <UsageMenu />
+        {/* the subscriptions are the clis': nothing to show when the server has them off */}
+        {status?.offered.some((agent) => agent !== "api") && <UsageMenu />}
         <Health status={status} live={live} />
         <span aria-hidden className="mx-1 h-4 w-px bg-kumo-hairline" />
-        <SettingsDialog webhook={status?.webhook ?? false} />
+        <SettingsDialog webhook={status?.webhook ?? false} offered={status?.offered} />
         {status?.auth && <Account user={status.user} />}
       </div>
     )}
@@ -230,13 +233,13 @@ export const SignIn = () => {
   useEffect(() => {
     methods()
       .then(setOffered)
-      .catch(() => setError("couldn't reach glance"))
+      .catch(() => setError("couldn't reach mekiki"))
   }, [])
 
   const go = async (provider: "github" | "sso") => {
     setBusy(provider)
     setError(null)
-    const refused = await signInWith(provider).catch(() => "couldn't reach glance")
+    const refused = await signInWith(provider).catch(() => "couldn't reach mekiki")
     // on success the browser is already leaving for the provider
     if (refused) {
       setBusy(undefined)
@@ -253,7 +256,7 @@ export const SignIn = () => {
               Sign in
             </Text>
             <Text variant="secondary" size="sm">
-              This glance is for its team only. Sign in with the account it knows you by.
+              This mekiki is for its team only. Sign in with the account it knows you by.
             </Text>
           </div>
           {offered?.sso && (

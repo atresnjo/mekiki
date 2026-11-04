@@ -1,4 +1,4 @@
-// the repositories glance can reach, through the real client against a local github: as an app
+// the repositories mekiki can reach, through the real client against a local github: as an app
 // (every installation, every page of each) and as a token
 import { afterAll, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"

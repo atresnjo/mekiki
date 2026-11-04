@@ -1,5 +1,5 @@
 // signing in to the dashboard: better auth, with github and/or the company's sso (oidc or saml), its
-// sessions in postgres. who may come in is glance's own rule (`allowed`): listed addresses and
+// sessions in postgres. who may come in is mekiki's own rule (`allowed`): listed addresses and
 // domains, github organizations, and the sso provider's domain. it's checked when a session starts
 // (a stranger never gets one) and again on every call, so taking someone off the list locks them out.
 //
@@ -19,15 +19,15 @@ import { authAccounts, authSessions, authVerifications, ssoProviders, users } fr
 /** the one sso provider's id: its callback is /api/auth/sso/callback/sso (oidc) or /api/auth/sso/saml2/sp/acs/sso (saml) */
 export const SSO_ID = "sso"
 
-/** the header glance tells better auth the client's address in: set from the socket (or a trusted proxy), never the client's own */
-const CLIENT_IP = "x-glance-client-ip"
+/** the header mekiki tells better auth the client's address in: set from the socket (or a trusted proxy), never the client's own */
+const CLIENT_IP = "x-mekiki-client-ip"
 
 /** how long a github organization membership is believed before it's asked again */
 const MEMBERSHIP_TTL = 10 * 60_000
 /** how long the answer to "may this user come in" is kept, per user */
 const ALLOWED_TTL = 60_000
 
-/** glance won't start like this: the message lists what to fix */
+/** mekiki won't start like this: the message lists what to fix */
 export class Misconfigured extends Schema.TaggedError<Misconfigured>()("Misconfigured", { message: Schema.String }) {}
 
 export class AuthError extends Schema.TaggedError<AuthError>()("AuthError", { operation: Schema.String, cause: Schema.Defect() }) {}
@@ -49,7 +49,7 @@ export interface Methods {
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"])
 
-/** glance won't run without signing in: production, or reachable from other machines */
+/** mekiki won't run without signing in: production, or reachable from other machines */
 export const requiresSignIn = (config: Pick<AppConfig, "env" | "host">) => config.env === "production" || !LOOPBACK.has(config.host)
 
 export const methods = ({ auth }: Pick<AppConfig, "auth">): Methods => {
@@ -65,7 +65,7 @@ export const enabled = (config: Pick<AppConfig, "auth">) => {
   return m.github || m.sso !== null
 }
 
-/** what's wrong with the sign-in setup: glance doesn't start until it's empty */
+/** what's wrong with the sign-in setup: mekiki doesn't start until it's empty */
 export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): ReadonlyArray<string> => {
   const { auth } = config
   const found: Array<string> = []
@@ -73,17 +73,17 @@ export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): Read
   if (Option.isSome(auth.github.clientId) !== Option.isSome(auth.github.clientSecret))
     found.push("signing in with github needs both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")
   const oidcParts = [Option.isSome(auth.sso.issuer), Option.isSome(auth.sso.clientId), Option.isSome(auth.sso.clientSecret)].filter(Boolean).length
-  if (oidcParts > 0 && oidcParts < 3) found.push("oidc sso needs GLANCE_SSO_ISSUER, GLANCE_SSO_CLIENT_ID and GLANCE_SSO_CLIENT_SECRET")
-  if (oidcParts === 3 && Option.isSome(auth.sso.samlMetadataFile)) found.push("pick one sso: oidc (GLANCE_SSO_ISSUER…) or saml (GLANCE_SSO_SAML_METADATA_FILE)")
-  if (m.sso && Option.isNone(auth.sso.domain)) found.push("sso needs GLANCE_SSO_DOMAIN: the company's email domain (acme.com)")
+  if (oidcParts > 0 && oidcParts < 3) found.push("oidc sso needs MEKIKI_SSO_ISSUER, MEKIKI_SSO_CLIENT_ID and MEKIKI_SSO_CLIENT_SECRET")
+  if (oidcParts === 3 && Option.isSome(auth.sso.samlMetadataFile)) found.push("pick one sso: oidc (MEKIKI_SSO_ISSUER…) or saml (MEKIKI_SSO_SAML_METADATA_FILE)")
+  if (m.sso && Option.isNone(auth.sso.domain)) found.push("sso needs MEKIKI_SSO_DOMAIN: the company's email domain (acme.com)")
   if (auth.allowedGithubOrgs.length > 0 && !m.github)
-    found.push("GLANCE_ALLOWED_GITHUB_ORGS needs signing in with github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)")
+    found.push("MEKIKI_ALLOWED_GITHUB_ORGS needs signing in with github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)")
   const url = URL.parse(auth.url)
   if (!url) found.push(`BETTER_AUTH_URL isn't a url: ${auth.url}`)
   if (!enabled(config)) {
     if (requiresSignIn(config))
       found.push(
-        "glance is in production (GLANCE_ENV=production, or HOST isn't loopback) and nobody could sign in: set up github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET) or sso (GLANCE_SSO_*)",
+        "mekiki is in production (MEKIKI_ENV=production, or HOST isn't loopback) and nobody could sign in: set up github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET) or sso (MEKIKI_SSO_*)",
       )
     return found
   }
@@ -93,10 +93,10 @@ export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): Read
     if (url && url.protocol !== "https:") found.push(`BETTER_AUTH_URL must be https in production: ${auth.url}`)
   }
   if (auth.allowedEmails.length === 0 && auth.allowedGithubOrgs.length === 0 && Option.isNone(auth.sso.domain))
-    found.push("nobody is allowed in: set GLANCE_ALLOWED_EMAILS, GLANCE_ALLOWED_GITHUB_ORGS or GLANCE_SSO_DOMAIN")
+    found.push("nobody is allowed in: set MEKIKI_ALLOWED_EMAILS, MEKIKI_ALLOWED_GITHUB_ORGS or MEKIKI_SSO_DOMAIN")
   for (const entry of auth.allowedEmails)
     if (!/^[^@\s]*@[^@\s]+\.[^@\s]+$/.test(entry))
-      found.push(`GLANCE_ALLOWED_EMAILS: "${entry}" is neither an address (alice@acme.com) nor a domain (@acme.com)`)
+      found.push(`MEKIKI_ALLOWED_EMAILS: "${entry}" is neither an address (alice@acme.com) nor a domain (@acme.com)`)
   return found
 }
 
@@ -120,7 +120,7 @@ export interface Identity {
 
 /**
  * may they in, before asking github about organizations. an address counts when github verified it,
- * or when it came from the company's sso (which glance's operator set up, so its word is trusted)
+ * or when it came from the company's sso (which mekiki's operator set up, so its word is trusted)
  */
 export const allowedByEmail = (auth: AppConfig["auth"], who: Identity) => {
   const fromSso = who.providers.includes(SSO_ID)
@@ -154,7 +154,7 @@ const create = (input: {
   const idpOrigins = oidc ? [...new Set([new URL(issuer).origin, new URL(discovery).origin])] : []
 
   const options: BetterAuthOptions = {
-    appName: "glance",
+    appName: "mekiki",
     baseURL: base,
     basePath: "/api/auth",
     secret: Option.getOrUndefined(Option.map(auth.secret, Redacted.value)),
@@ -180,7 +180,7 @@ const create = (input: {
       // the company's sso vouches for its addresses: a github account with the same one becomes the same person
       accountLinking: { enabled: true, trustedProviders: [SSO_ID] },
     },
-    // in memory: glance is one instance (see the readme)
+    // in memory: mekiki is one instance (see the readme)
     rateLimit: { enabled: true, storage: "memory" },
     // providers come from the environment, never from the api; nobody links more accounts or edits themselves
     disabledPaths: [
@@ -245,7 +245,7 @@ const create = (input: {
         ]
       : [],
     advanced: {
-      cookiePrefix: "glance",
+      cookiePrefix: "mekiki",
       ipAddress: { ipAddressHeaders: [CLIENT_IP] },
     },
     // a sign-in that goes wrong comes back to the dashboard, which says why (?error=…)
@@ -272,9 +272,9 @@ export interface Interface {
   readonly instance: Instance | null
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Auth") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Auth") {}
 
-/** whoever's using a glance that has no sign-in: development on this machine */
+/** whoever's using a mekiki that has no sign-in: development on this machine */
 export const LOCAL: User = { id: "local", name: "local", email: "", image: null }
 
 /** the headers of an effect request, as the web Headers better auth reads */
@@ -288,7 +288,7 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
   if (found.length > 0) return yield* new Misconfigured({ message: `signing in isn't set up right:\n- ${found.join("\n- ")}` })
   const m = methods(config)
   if (!enabled(config)) {
-    yield* Effect.logWarning("nobody signs in to this glance: anyone who reaches it can use it. set up github or sso before exposing it")
+    yield* Effect.logWarning("nobody signs in to this mekiki: anyone who reaches it can use it. set up github or sso before exposing it")
     return Service.of({
       enabled: false,
       methods: m,
@@ -328,7 +328,7 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
       const response = yield* http.execute(
         HttpClientRequest.get(`https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`).pipe(
           HttpClientRequest.bearerToken(token),
-          HttpClientRequest.setHeaders({ accept: "application/vnd.github+json", "user-agent": "glance" }),
+          HttpClientRequest.setHeaders({ accept: "application/vnd.github+json", "user-agent": "mekiki" }),
         ),
       )
       if (response.status === 404 || response.status === 403) return false

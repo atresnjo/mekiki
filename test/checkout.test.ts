@@ -20,7 +20,7 @@ const git = (cwd: string, ...args: Array<string>) => {
 
 /** a repository on disk, served over file:// the way github serves it: partial clones, any commit by its id */
 const origin = (files: Record<string, string | Uint8Array>) => {
-  const dir = mkdtempSync(join(tmpdir(), "glance-origin-"))
+  const dir = mkdtempSync(join(tmpdir(), "mekiki-origin-"))
   git(dir, "init", "-q")
   git(dir, "config", "uploadpack.allowFilter", "true")
   git(dir, "config", "uploadpack.allowAnySHA1InWant", "true")
@@ -31,7 +31,7 @@ const origin = (files: Record<string, string | Uint8Array>) => {
 }
 
 const checkoutWith = (url: string, options: { maxMegabytes: number }) => {
-  const dir = mkdtempSync(join(tmpdir(), "glance-checkouts-"))
+  const dir = mkdtempSync(join(tmpdir(), "mekiki-checkouts-"))
   const github = Layer.effect(
     GitHub.Service,
     Effect.map(GitHub.Service, (fake) =>

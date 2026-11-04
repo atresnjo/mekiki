@@ -30,7 +30,7 @@ const SignedIn = Layer.succeed(
     handler: () => Effect.succeed(new Response(null, { status: 404 })),
     user: (headers) =>
       Effect.succeed(
-        (headers.get("cookie") ?? "").split(/;\s*/).includes("glance-e2e=signed-in")
+        (headers.get("cookie") ?? "").split(/;\s*/).includes("mekiki-e2e=signed-in")
           ? Option.some({ id: "e2e", name: "E2E", email: "e2e@acme.com", image: null })
           : Option.none(),
       ),

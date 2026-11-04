@@ -8,4 +8,4 @@ Verification scenarios, recorded before implementation:
 - Retrying a dry run must preserve no-post behavior.
 - A copied checkbox comment must not trigger a review; the stored panel comment still must.
 - Desktop/mobile usage display must remain legible and refresh without losing the rest of the dashboard.
-- Commenters without write access must not be able to spend the subscription with /glance; collaborators may still request reviews.
+- Commenters without write access must not be able to spend the subscription with /mekiki; collaborators may still request reviews.

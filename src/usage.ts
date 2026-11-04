@@ -54,7 +54,7 @@ const Message = Schema.Struct({
   error: Schema.optional(Schema.Unknown),
 })
 
-export class Service extends Context.Service<Service, { readonly read: Effect.Effect<SubscriptionUsage> }>()("glance/Usage") {}
+export class Service extends Context.Service<Service, { readonly read: Effect.Effect<SubscriptionUsage> }>()("mekiki/Usage") {}
 
 export const make = Effect.fn("Usage.make")(function* (options: Pick<Options, "codexBin">) {
   const fs = yield* FileSystem.FileSystem
@@ -117,8 +117,8 @@ export const make = Effect.fn("Usage.make")(function* (options: Pick<Options, "c
   const codex = Effect.gen(function* () {
     // A short-lived app-server owns login refresh; no auth.json parsing and no model turn.
     const input = yield* Queue.unbounded<string>()
-    yield* Queue.offer(input, JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "glance_usage", version: "1.0" } } }) + "\n")
-    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "glance-usage-" })
+    yield* Queue.offer(input, JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "mekiki_usage", version: "1.0" } } }) + "\n")
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "mekiki-usage-" })
     const child = yield* spawner.spawn(
       ChildProcess.make(options.codexBin, ["app-server"], {
         cwd: dir,

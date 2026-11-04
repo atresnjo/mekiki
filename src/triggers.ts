@@ -1,6 +1,6 @@
 // who may start a review from github, and how often. a review costs agent time on a subscription,
 // so a comment, a ticked box or a label only starts one when the person behind it has (at least)
-// GLANCE_TRIGGER_PERMISSION on the repository, and each person and pull request gets a few an hour
+// MEKIKI_TRIGGER_PERMISSION on the repository, and each person and pull request gets a few an hour
 import { Cache, Context, Duration, Effect, Exit, Layer } from "effect"
 import { RateLimiter } from "effect/persistence"
 import type { AppConfig } from "./config.ts"
@@ -30,7 +30,7 @@ export interface Interface {
   readonly allowAutomatic: (pr: PrRef, author: Sender) => Effect.Effect<Verdict>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Triggers") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Triggers") {}
 
 export const atLeast = (has: Permission, needs: Permission) => RANK[has] >= RANK[needs]
 

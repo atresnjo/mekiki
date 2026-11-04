@@ -3,11 +3,11 @@ import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import { type RpcClient, type RpcGroup, RpcTest } from "effect/rpc"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
-import { GlanceRpcs, PAGE } from "../src/rpc.ts"
+import { MekikiRpcs, PAGE } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
 import { type Calls, configFrom, fakeAgent, fakeAuth, fakeGitHub, fakeHealth, fakeReviewer, fakeUsage, memoryStore, review } from "./support.ts"
 
-const run = <A, E>(signIn: boolean, f: (client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof GlanceRpcs>>, calls: Calls) => Effect.Effect<A, E, Store.Service>) => {
+const run = <A, E>(signIn: boolean, f: (client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof MekikiRpcs>>, calls: Calls) => Effect.Effect<A, E, Store.Service>) => {
   const config = configFrom({})
   const calls: Calls = { started: [], cancelled: [] }
   const services = Layer.mergeAll(memoryStore(config), fakeAuth(signIn), fakeReviewer(calls), fakeAgent, fakeHealth, fakeUsage, fakeGitHub([])).pipe(
@@ -15,7 +15,7 @@ const run = <A, E>(signIn: boolean, f: (client: RpcClient.RpcClient<RpcGroup.Rpc
   )
   return Effect.runPromise(
     Effect.gen(function* () {
-      const client = yield* RpcTest.makeClient(GlanceRpcs)
+      const client = yield* RpcTest.makeClient(MekikiRpcs)
       return yield* f(client, calls)
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(HandlersLive(config), AuthenticatedLive).pipe(Layer.provideMerge(services)))),
   )
@@ -33,6 +33,7 @@ test("with signing in on, a call without a session is refused, and one with it g
   expect(result.refused._tag).toBe("Unauthorized")
   expect(result.status).toEqual({
     agents: { claude: "claude 1.0", codex: null, api: null },
+    offered: ["claude", "codex", "api"],
     webhook: false,
     auth: true,
     user: { id: "u1", name: "Alice", email: "alice@acme.com", image: null },
@@ -110,7 +111,7 @@ test("repository settings: saved tidied, listed, removed; a bad name, login or o
   expect(result.after).toEqual([])
 })
 
-test("adding a repository suggests where glance is installed and what it has reviewed, once each", async () => {
+test("adding a repository suggests where mekiki is installed and what it has reviewed, once each", async () => {
   const repos = await run(false, (client) =>
     Effect.gen(function* () {
       const store = yield* Store.Service

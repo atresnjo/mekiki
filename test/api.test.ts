@@ -2,7 +2,7 @@
 // sandbox, answers in the review schema, keeps to its step cap and its time, stops when the review
 // does, counts what it spent, and its key reaches no child process, no rpc answer and no error
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { BunServices } from "@effect/platform-bun"
@@ -18,13 +18,13 @@ import { estimate } from "../src/prices.ts"
 import { system } from "../src/prompt.ts"
 import { Reviewer } from "../src/reviewer.ts"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
-import { GlanceRpcs } from "../src/rpc.ts"
+import { MekikiRpcs } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
 import { Checkout } from "../src/checkout.ts"
 import { type Calls, configFrom, fakeAuth, fakeGitHub, fakePanel, fakeReviewer, fakeUsage, memoryStore, review as stored } from "./support.ts"
 
 const KEY = "sk-test-NEVER-SHOWN-4f2a"
-const root = mkdtempSync(join(tmpdir(), "glance-api-"))
+const root = mkdtempSync(join(tmpdir(), "mekiki-api-"))
 const code = join(root, "checkout")
 mkdirSync(join(code, "src"), { recursive: true })
 writeFileSync(join(root, "secret.txt"), "OUTSIDE-SECRET\n")
@@ -108,7 +108,7 @@ describe("the api agent", () => {
     })
     const { result, asked } = await withAgent(model, (agent) => agent.review(request(true)))
     expect(result.review).toEqual(REVIEW)
-    // the default model is GLANCE_API_MODEL's
+    // the default model is MEKIKI_API_MODEL's
     expect(asked).toEqual(["claude-sonnet-5-5"])
 
     const [first, , last] = model.doGenerateCalls
@@ -221,8 +221,8 @@ describe("the api agent", () => {
     ])
     const why = (overrides: Partial<Agent.ApiOptions>) =>
       withAgent(model, (agent) => agent.check("api").pipe(Effect.flip), { api: overrides }).then(({ result }) => result.message)
-    expect(await why({ provider: Option.none() })).toContain("set GLANCE_API_PROVIDER")
-    expect(await why({ model: "" })).toBe("set GLANCE_API_MODEL")
+    expect(await why({ provider: Option.none() })).toContain("set MEKIKI_API_PROVIDER")
+    expect(await why({ model: "" })).toBe("set MEKIKI_API_MODEL")
     expect(await why({ key: Option.none() })).toBe("set ANTHROPIC_API_KEY")
     expect(await why({ provider: Option.some("google"), key: Option.none() })).toBe("set GOOGLE_GENERATIVE_AI_API_KEY")
   })
@@ -240,25 +240,25 @@ describe("providers and prices", () => {
     expect(at("google")).toBe("google.generative-ai some-model")
   })
 
-  test("a gateway's or a snapshot's name finds its price; GLANCE_PRICES adds and replaces entries", () => {
+  test("a gateway's or a snapshot's name finds its price; MEKIKI_PRICES adds and replaces entries", () => {
     const tokens = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 }
     // 1M fresh at $2, 1M cached at $0.20, 1M out at $10
     for (const name of ["claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "claude-sonnet-5-5-20260901"]) expect(estimate(name, tokens)).toBeCloseTo(12.2, 6)
     expect(estimate("gpt-6-sol-2026-09-01", tokens)).toBeCloseTo(2 + 0.1 + 10, 6)
     expect(estimate("unknown-model", tokens)).toBeNull()
     const { prices } = configFrom({
-      GLANCE_PRICES: JSON.stringify({ "my-model": { input: 1, cachedInput: 0, output: 1 }, "claude-sonnet-5-5": { input: 0, cachedInput: 0, output: 0 } }),
+      MEKIKI_PRICES: JSON.stringify({ "my-model": { input: 1, cachedInput: 0, output: 1 }, "claude-sonnet-5-5": { input: 0, cachedInput: 0, output: 0 } }),
     }).agent
     expect(estimate("my-model", tokens, prices)).toBeCloseTo(2, 6)
     expect(estimate("claude-sonnet-5-5", tokens, prices)).toBe(0)
     expect(estimate("claude-opus-5-5", tokens, prices)).toBeCloseTo(4 + 0.2 + 20, 6)
-    expect(() => configFrom({ GLANCE_PRICES: "{not json" })).toThrow()
+    expect(() => configFrom({ MEKIKI_PRICES: "{not json" })).toThrow()
   })
 })
 
 describe("the key stays on the server", () => {
   test("the CLIs never get it, nor any other api setting, and their usage is recorded", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "glance-cli-env-"))
+    const dir = mkdtempSync(join(tmpdir(), "mekiki-cli-env-"))
     const saved = { ...process.env }
     Object.assign(process.env, {
       CLAUDE_CONFIG_DIR: dir,
@@ -266,15 +266,15 @@ describe("the key stays on the server", () => {
       OPENAI_API_KEY: KEY,
       ANTHROPIC_API_KEY: KEY,
       GOOGLE_GENERATIVE_AI_API_KEY: KEY,
-      GLANCE_API_BASE_URL: "https://gateway.example",
-      GLANCE_PRICES: "{}",
+      MEKIKI_API_BASE_URL: "https://gateway.example",
+      MEKIKI_PRICES: "{}",
     })
     try {
       const config = configFrom({
         CLAUDE_BIN: resolve("test/e2e/agent.ts"),
         CODEX_BIN: resolve("test/e2e/agent.ts"),
-        GLANCE_API_PROVIDER: "openai",
-        GLANCE_API_MODEL: "gpt-6-sol",
+        MEKIKI_API_PROVIDER: "openai",
+        MEKIKI_API_MODEL: "gpt-6-sol",
         OPENAI_API_KEY: KEY,
       })
       const answers = await Effect.runPromise(
@@ -309,12 +309,12 @@ describe("the key stays on the server", () => {
     const config = configFrom({
       CLAUDE_BIN: "/nonexistent/claude",
       CODEX_BIN: "/nonexistent/codex",
-      GLANCE_API_PROVIDER: "openai",
-      GLANCE_API_MODEL: "gpt-6-sol",
-      GLANCE_API_MODELS: "gpt-6-luna",
-      GLANCE_API_BASE_URL: "https://gateway.example/v1",
+      MEKIKI_API_PROVIDER: "openai",
+      MEKIKI_API_MODEL: "gpt-6-sol",
+      MEKIKI_API_MODELS: "gpt-6-luna",
+      MEKIKI_API_BASE_URL: "https://gateway.example/v1",
       OPENAI_API_KEY: KEY,
-      GLANCE_AGENT: "api",
+      MEKIKI_AGENT: "api",
     })
     // the config itself prints the key redacted, should anything log it
     expect(JSON.stringify(config)).not.toContain(KEY)
@@ -326,7 +326,7 @@ describe("the key stays on the server", () => {
     )
     const answers = await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(GlanceRpcs)
+        const client = yield* RpcTest.makeClient(MekikiRpcs)
         const status = yield* client.GetStatus(undefined)
         const models = yield* client.GetModels(undefined)
         const settings = yield* client.GetSettings(undefined)
@@ -346,6 +346,55 @@ describe("the key stays on the server", () => {
     const text = JSON.stringify(answers)
     expect(text).not.toContain(KEY)
     expect(text).not.toContain("gateway.example")
+  })
+
+  test("with the clis off, only the api agent is offered and neither cli is ever started", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mekiki-clis-off-"))
+    // a cli that leaves a mark when it runs
+    const cli = join(dir, "cli")
+    writeFileSync(cli, `#!/bin/sh\ntouch ${join(dir, "ran")}\necho 1.0\n`, { mode: 0o755 })
+    try {
+      // MEKIKI_AGENT is left at claude: what was chosen before the clis went off reads as the api agent
+      const config = configFrom({
+        MEKIKI_CLI_AGENTS: "false",
+        CLAUDE_BIN: cli,
+        CODEX_BIN: cli,
+        MEKIKI_API_PROVIDER: "openai",
+        MEKIKI_API_MODEL: "gpt-6-sol",
+        OPENAI_API_KEY: KEY,
+      })
+      const services = Layer.mergeAll(fakeAuth(false), fakeReviewer({ started: [], cancelled: [] }), fakeUsage, fakeGitHub([])).pipe(
+        Layer.provideMerge(Health.layer.pipe(Layer.provideMerge(Layer.mergeAll(Agent.layer(config.agent), memoryStore(config))))),
+        Layer.provideMerge(BunServices.layer),
+      )
+      const answers = await Effect.runPromise(
+        Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(MekikiRpcs)
+          const status = yield* client.GetStatus(undefined)
+          const models = yield* client.GetModels(undefined)
+          const settings = yield* client.GetSettings(undefined)
+          const refused = yield* client.SaveSettings({ ...settings, agent: "claude" }).pipe(Effect.flip)
+          const usage = yield* client.GetUsage(undefined)
+          const health = yield* (yield* Health.Service).report
+          const review = yield* (yield* Agent.Service)
+            .review({ agent: "codex", model: "", effort: "low", system: "", code: undefined, prompt: "" })
+            .pipe(Effect.flip)
+          return { status, models, settings, refused, usage, health, review }
+        }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(HandlersLive(config), AuthenticatedLive).pipe(Layer.provideMerge(services)))),
+      )
+      expect(answers.status.offered).toEqual(["api"])
+      expect(answers.status.agents).toEqual({ claude: null, codex: null, api: "openai gpt-6-sol" })
+      expect(answers.models).toEqual({ claude: [], codex: [], api: [{ id: "", label: "Default (gpt-6-sol)" }] })
+      expect(answers.settings).toMatchObject({ agent: "api", model: "" })
+      expect(answers.refused._tag).toBe("Invalid")
+      expect(answers.usage.claude.unavailable).toBe("The CLI agents are off.")
+      // the api agent alone is enough to be healthy
+      expect(answers.health.ok).toBe(true)
+      expect(answers.review.message).toContain("MEKIKI_CLI_AGENTS=false")
+      expect(readdirSync(dir)).toEqual(["cli"])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -378,10 +427,10 @@ describe("usage on the review", () => {
       GITHUB_API_URL: server.url.href.replace(/\/$/, ""),
       GITHUB_TOKEN: "fixture-token",
       CHUNK_CHARS: "1",
-      GLANCE_API_PROVIDER: "anthropic",
-      GLANCE_API_MODEL: "claude-sonnet-5-5",
+      MEKIKI_API_PROVIDER: "anthropic",
+      MEKIKI_API_MODEL: "claude-sonnet-5-5",
       ANTHROPIC_API_KEY: KEY,
-      GLANCE_AGENT: "api",
+      MEKIKI_AGENT: "api",
     })
     const checkout = Layer.succeed(Checkout.Service, Checkout.Service.of({ at: () => Effect.succeed(code) }))
     const { review, kept } = await Effect.runPromise(

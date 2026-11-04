@@ -1,15 +1,15 @@
-// the rpc api (rpc.ts) on top of glance's services, served at RPC_PATH (http + ndjson).
+// the rpc api (rpc.ts) on top of mekiki's services, served at RPC_PATH (http + ndjson).
 // every call is checked by the Authenticated middleware: better auth's session, and whether they're still allowed in
-import { Duration, Effect, Layer, Option, Stream } from "effect"
+import { Clock, Duration, Effect, Layer, Option, Stream } from "effect"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { Agent } from "./agent.ts"
 import { Auth } from "./auth.ts"
 import type { AppConfig } from "./config.ts"
-import { cleanList, type Depth, isRepo, parsePrUrl, type Review, type Settings, settingsProblem } from "./domain.ts"
+import { type AgentKind, cleanList, type Depth, isRepo, parsePrUrl, type Review, type Settings, settingsProblem } from "./domain.ts"
 import { GitHub } from "./github.ts"
 import { Health } from "./health.ts"
 import { Reviewer } from "./reviewer.ts"
-import { Authenticated, CurrentUser, Failed, GlanceRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
+import { Authenticated, CurrentUser, Failed, MekikiRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
 import { Store } from "./store.ts"
 import { Usage } from "./usage.ts"
 
@@ -38,7 +38,7 @@ const prOf = (review: Review) => {
 
 /** Expected refusals stay typed; infrastructure failures and defects are logged and sanitized. */
 const failed = (defect: unknown) =>
-  Effect.logError("rpc failed", defect).pipe(Effect.andThen(Effect.fail(new Failed({ message: "glance failed: the details are in its log" }))))
+  Effect.logError("rpc failed", defect).pipe(Effect.andThen(Effect.fail(new Failed({ message: "mekiki failed: the details are in its log" }))))
 const api = <A, E, R>(effect: Effect.Effect<A, E | Store.StoreError, R>) => effect.pipe(Effect.catchTag("StoreError", failed), Effect.catchDefect(failed))
 
 export const AuthenticatedLive = Layer.effect(
@@ -48,7 +48,7 @@ export const AuthenticatedLive = Layer.effect(
     return Authenticated.of(
       Effect.fn("Rpc.authenticate")(function* (effect, { headers }) {
         const user = yield* auth.user(Auth.webHeaders(headers))
-        if (Option.isNone(user)) return yield* new Unauthorized({ message: "sign in to use glance" })
+        if (Option.isNone(user)) return yield* new Unauthorized({ message: "sign in to use mekiki" })
         return yield* Effect.provideService(effect, CurrentUser, user.value)
       }),
     )
@@ -56,7 +56,7 @@ export const AuthenticatedLive = Layer.effect(
 )
 
 export const HandlersLive = (config: AppConfig) =>
-  GlanceRpcs.toLayer(
+  MekikiRpcs.toLayer(
     Effect.gen(function* () {
       const reviewer = yield* Reviewer.Service
       const store = yield* Store.Service
@@ -72,20 +72,15 @@ export const HandlersLive = (config: AppConfig) =>
         return review.value
       })
 
-      // the model lists cost a process spawn, and change only with a cli update
+      // the model lists cost a process spawn, and change only with a cli update. an agent that's off has none
+      const modelsOf = (kind: AgentKind) =>
+        agent.offered.includes(kind) ? agent.models(kind).pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])) : Effect.succeed([])
       const models = yield* Effect.cachedWithTTL(
-        Effect.all(
-          {
-            claude: agent.models("claude").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
-            codex: agent.models("codex").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
-            api: agent.models("api").pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])),
-          },
-          { concurrency: "unbounded" },
-        ),
+        Effect.all({ claude: modelsOf("claude"), codex: modelsOf("codex"), api: modelsOf("api") }, { concurrency: "unbounded" }),
         Duration.minutes(10),
       )
 
-      return GlanceRpcs.of({
+      return MekikiRpcs.of({
         WatchReviews: () =>
           Stream.unwrap(
             Effect.gen(function* () {
@@ -126,11 +121,16 @@ export const HandlersLive = (config: AppConfig) =>
           yield* reviewer.cancel(prOf(review))
         }, api),
 
-        GetUsage: () => usage.read.pipe(api),
+        // the subscriptions are the clis': with them off there's nothing to check, and nothing is started
+        GetUsage: Effect.fn("Rpc.GetUsage")(function* () {
+          if (agent.offered.includes("claude")) return yield* usage.read
+          const off = { windows: [], checkedAt: yield* Clock.currentTimeMillis, unavailable: "The CLI agents are off." }
+          return { claude: off, codex: off }
+        }, api),
 
         GetStatus: Effect.fn("Rpc.GetStatus")(function* () {
           const agents = yield* health.agents
-          return { agents, webhook: Option.isSome(config.github.webhookSecret), auth: auth.enabled, user: yield* CurrentUser }
+          return { agents, offered: agent.offered, webhook: Option.isSome(config.github.webhookSecret), auth: auth.enabled, user: yield* CurrentUser }
         }, api),
 
         GetSettings: () => store.settings.pipe(api),
@@ -138,6 +138,7 @@ export const HandlersLive = (config: AppConfig) =>
         GetModels: () => models.pipe(api),
 
         SaveSettings: Effect.fn("Rpc.SaveSettings")(function* (settings) {
+          if (!agent.offered.includes(settings.agent)) return yield* new Invalid({ message: `the ${settings.agent} agent is off here` })
           const offered = yield* models
           if (!offered[settings.agent].some((model) => model.id === settings.model))
             return yield* new Invalid({ message: `${settings.agent} has no model "${settings.model}"` })
@@ -164,7 +165,7 @@ export const HandlersLive = (config: AppConfig) =>
           const [reachable, reviewed] = yield* Effect.all(
             [
               github.repositories.pipe(
-                Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't list the repositories glance can reach", error).pipe(Effect.as([]))),
+                Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't list the repositories mekiki can reach", error).pipe(Effect.as([]))),
               ),
               store.reviewedRepos,
             ],
@@ -178,7 +179,7 @@ export const HandlersLive = (config: AppConfig) =>
 
 /** POST RPC_PATH: the handlers, the auth middleware, ndjson so the review stream works over plain http */
 export const routes = (config: AppConfig) =>
-  RpcServer.layerHttp({ group: GlanceRpcs, path: RPC_PATH, protocol: "http" }).pipe(
+  RpcServer.layerHttp({ group: MekikiRpcs, path: RPC_PATH, protocol: "http" }).pipe(
     Layer.provide(HandlersLive(config)),
     Layer.provide(AuthenticatedLive),
     Layer.provide(RpcSerialization.layerNdjson),

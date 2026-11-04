@@ -1,5 +1,5 @@
 // what a review costs, estimated: dollars per million tokens, by model. edit the table, or set
-// GLANCE_PRICES to add or replace entries without a rebuild. a model that isn't here gets no estimate
+// MEKIKI_PRICES to add or replace entries without a rebuild. a model that isn't here gets no estimate
 // (the dashboard shows its tokens alone). cache writes are counted at the input price
 import { Schema } from "effect"
 import type { Usage } from "./domain.ts"
@@ -7,7 +7,7 @@ import type { Usage } from "./domain.ts"
 export const Price = Schema.Struct({ input: Schema.Finite, cachedInput: Schema.Finite, output: Schema.Finite })
 export interface Price extends Schema.Schema.Type<typeof Price> {}
 
-/** GLANCE_PRICES: `{"my-model": {"input": 1, "cachedInput": 0.1, "output": 5}}` */
+/** MEKIKI_PRICES: `{"my-model": {"input": 1, "cachedInput": 0.1, "output": 5}}` */
 export const Prices = Schema.Record(Schema.String, Price)
 export type Prices = typeof Prices.Type
 

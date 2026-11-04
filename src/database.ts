@@ -11,7 +11,7 @@ import { Context, Effect, Layer, type Redacted } from "effect"
 /** a drizzle database whose queries are effects: postgres in production, pglite in the tests */
 export type Interface = PgEffectDatabase<PgDrizzle.EffectPgQueryEffectHKT, PgQueryResultHKT>
 
-export class Service extends Context.Service<Service, Interface>()("glance/Database") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Database") {}
 
 export const MIGRATIONS = fileURLToPath(new URL("../drizzle", import.meta.url))
 
@@ -23,6 +23,6 @@ export const layer = (options: { readonly url: Redacted.Redacted }) =>
       yield* migrate(db, { migrationsFolder: MIGRATIONS })
       return db
     }).pipe(Effect.withSpan("Database.migrate")),
-  ).pipe(Layer.provide(PgClient.layer({ url: options.url, applicationName: "glance" })))
+  ).pipe(Layer.provide(PgClient.layer({ url: options.url, applicationName: "mekiki" })))
 
 export * as Database from "./database.ts"

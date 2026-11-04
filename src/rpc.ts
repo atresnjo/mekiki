@@ -1,11 +1,11 @@
 // the contract between the dashboard (web/) and the server: every call, its input, output and errors.
 // both sides import this; the server implements it (rpc-server.ts), the dashboard calls it through an
-// atom-backed client (web/src/lib/glance.ts). transport: http + ndjson at RPC_PATH.
+// atom-backed client (web/src/lib/mekiki.ts). transport: http + ndjson at RPC_PATH.
 //
 // not in here, on purpose: the github webhook (plain http, guarded by its signature)
 import { Context, Duration, Schema } from "effect"
 import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
-import { Depth, RepoSettings, Review, Settings } from "./domain.ts"
+import { AgentKind, Depth, RepoSettings, Review, Settings } from "./domain.ts"
 
 // what the dashboard shows comes from the domain, and so do the checks its settings get
 export {
@@ -40,7 +40,7 @@ export class NotFound extends Schema.TaggedError<NotFound>()("NotFound", { messa
 /** the input can't be used as it is */
 export class Invalid extends Schema.TaggedError<Invalid>()("Invalid", { message: Schema.String }) {}
 
-/** glance tried and failed: the details are in the server's log */
+/** mekiki tried and failed: the details are in the server's log */
 export class Failed extends Schema.TaggedError<Failed>()("Failed", { message: Schema.String }) {}
 
 /** every way a call can be refused or fail */
@@ -51,13 +51,13 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthoriz
 
 // ---------- auth: with signing in on, every call carries better auth's session cookie (/api/auth) ----------
 
-/** who's calling: someone signed in, or the local user of a glance without sign-in */
+/** who's calling: someone signed in, or the local user of a mekiki without sign-in */
 export const User = Schema.Struct({ id: Schema.String, name: Schema.String, email: Schema.String, image: Schema.NullOr(Schema.String) })
 export interface User extends Schema.Schema.Type<typeof User> {}
 
-export class CurrentUser extends Context.Service<CurrentUser, User>()("@glance/api/CurrentUser") {}
+export class CurrentUser extends Context.Service<CurrentUser, User>()("@mekiki/api/CurrentUser") {}
 
-export class Authenticated extends RpcMiddleware.Service<Authenticated, { provides: CurrentUser }>()("@glance/api/Authenticated", {
+export class Authenticated extends RpcMiddleware.Service<Authenticated, { provides: CurrentUser }>()("@mekiki/api/Authenticated", {
   error: Unauthorized,
 }) {}
 
@@ -69,7 +69,7 @@ export interface Model extends Schema.Schema.Type<typeof Model> {}
 export const Models = Schema.Struct({ claude: Schema.Array(Model), codex: Schema.Array(Model), api: Schema.Array(Model) })
 export interface Models extends Schema.Schema.Type<typeof Models> {}
 
-/** Provider-reported account usage, including activity outside glance. No credentials cross RPC. */
+/** Provider-reported account usage, including activity outside mekiki. No credentials cross RPC. */
 export const UsageWindow = Schema.Struct({
   label: Schema.String,
   usedPercent: Schema.Finite,
@@ -93,6 +93,8 @@ export const Status = Schema.Struct({
    * provider and model once it has a key, never the key
    */
   agents: Schema.Struct({ claude: Schema.NullOr(Schema.String), codex: Schema.NullOr(Schema.String), api: Schema.NullOr(Schema.String) }),
+  /** the agents this mekiki reviews with: the api agent alone when the clis are off (MEKIKI_CLI_AGENTS) */
+  offered: Schema.Array(AgentKind),
   webhook: Schema.Boolean,
   /** signing in is on: the dashboard offers to sign out */
   auth: Schema.Boolean,
@@ -117,7 +119,7 @@ export type ReviewsEvent = typeof ReviewsEvent.Type
 /** how many reviews the live stream's snapshot holds; older ones come a page at a time */
 export const PAGE = 200
 
-export class GlanceRpcs extends RpcGroup.make(
+export class MekikiRpcs extends RpcGroup.make(
   Rpc.make("WatchReviews", { success: ReviewsEvent, error: ApiError, stream: true }),
   /** the reviews before `before` (an id), newest first: what the live stream's snapshot doesn't hold */
   Rpc.make("ListReviews", { payload: { before: Schema.Finite }, success: Schema.Array(Review), error: ApiError }),
@@ -131,7 +133,7 @@ export class GlanceRpcs extends RpcGroup.make(
   Rpc.make("GetUsage", { success: SubscriptionUsage, error: ApiError }),
   Rpc.make("GetStatus", { success: Status, error: ApiError }),
   Rpc.make("GetSettings", { success: Settings, error: ApiError }),
-  /** only a model the chosen cli offers */
+  /** only an agent this mekiki offers, and a model it has */
   Rpc.make("SaveSettings", { payload: Settings, success: Settings, error: ApiError }),
   /** every repository with settings of its own */
   Rpc.make("GetRepoSettings", { success: Schema.Array(RepoSettings), error: ApiError }),
@@ -139,7 +141,7 @@ export class GlanceRpcs extends RpcGroup.make(
   Rpc.make("SaveRepoSettings", { payload: RepoSettings, success: RepoSettings, error: ApiError }),
   /** back to the global settings */
   Rpc.make("DeleteRepoSettings", { payload: { repo: Schema.String }, error: ApiError }),
-  /** the repositories glance can review (where the app is installed, or the token reaches) and has reviewed: what adding one suggests */
+  /** the repositories mekiki can review (where the app is installed, or the token reaches) and has reviewed: what adding one suggests */
   Rpc.make("GetRepos", { success: Schema.Array(Schema.String), error: ApiError }),
   Rpc.make("GetModels", { success: Models, error: ApiError }),
 ).middleware(Authenticated) {}

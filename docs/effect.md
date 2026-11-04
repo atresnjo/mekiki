@@ -1,6 +1,6 @@
 # Effect conventions
 
-Glance uses the aligned Effect **4.0.5** packages pinned in `package.json`. Research against
+Mekiki uses the aligned Effect **4.0.5** packages pinned in `package.json`. Research against
 the local Effect checkout (`../effect`, currently 4.0.3), then check the installed package
 source for the exact API. In this release the error constructor is `Schema.TaggedError`
 and the public HTTP, SQL, RPC and reactivity modules have their own package subpaths.

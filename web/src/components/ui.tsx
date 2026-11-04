@@ -4,7 +4,7 @@ import { Loader } from "@cloudflare/kumo/components/loader"
 import { Tabs } from "@cloudflare/kumo/components/tabs"
 import { useEffect, useState } from "react"
 import { Exit } from "effect"
-import { causeMessage, type Depth, type Failure, type Review, type Severity } from "../lib/glance.ts"
+import { causeMessage, type Depth, type Failure, type Review, type Severity } from "../lib/mekiki.ts"
 import { toasts } from "../lib/toasts.ts"
 
 export const seconds = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`)
@@ -80,7 +80,7 @@ export const StatusBadge = ({ review }: { review: Review }) => {
         </Badge>
       )
     case "done":
-      // part of it wasn't reviewed: "clean" would say more than glance knows
+      // part of it wasn't reviewed: "clean" would say more than mekiki knows
       if (review.unreviewed.length > 0)
         return (
           <Badge variant="warning" appearance="dot">

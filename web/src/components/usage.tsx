@@ -7,7 +7,7 @@ import { Icon } from "./icon.tsx"
 import { AsyncResult } from "effect/reactivity"
 import { Option } from "effect"
 import { useEffect, useState } from "react"
-import { type ProviderUsage, usageAtom } from "../lib/glance.ts"
+import { type ProviderUsage, usageAtom } from "../lib/mekiki.ts"
 import { ago } from "./ui.tsx"
 
 const Provider = ({ name, usage, now }: { name: string; usage: ProviderUsage; now: number }) => (
@@ -108,7 +108,7 @@ export const UsageMenu = () => {
                 Subscription usage
               </Text>
               <Text variant="secondary" size="xs">
-                Account-wide, including use outside glance. Claude updates every 15 minutes, Codex every 5.
+                Account-wide, including use outside mekiki. Claude updates every 15 minutes, Codex every 5.
               </Text>
             </div>
             <Button

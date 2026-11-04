@@ -23,7 +23,7 @@ import {
 import { useAtomSet } from "@effect/atom-react"
 import { useNavigate } from "@tanstack/react-router"
 import { type ReactNode, useEffect, useMemo, useState } from "react"
-import { cancelReview, type Review, retryReview } from "../lib/glance.ts"
+import { cancelReview, type Review, retryReview } from "../lib/mekiki.ts"
 import { toasts } from "../lib/toasts.ts"
 import { Icon, menuIcon } from "./icon.tsx"
 import { agentName, ago, DEPTHS, depthLabel, elapsed, fail, report, seconds, StatusBadge } from "./ui.tsx"
@@ -255,7 +255,7 @@ export const ReviewsTable = ({
               title={reviews.length === 0 ? "No reviews yet" : "No matching reviews"}
               description={
                 reviews.length === 0
-                  ? "Paste a pull request link above, or tick a depth in glance's comment on a pull request."
+                  ? "Paste a pull request link above, or tick a depth in mekiki's comment on a pull request."
                   : "Try another search or result filter."
               }
             />

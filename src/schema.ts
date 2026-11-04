@@ -28,7 +28,7 @@ export const repoSettings = snakeCase.table("repo_settings", {
   data: jsonb().$type<Omit<RepoSettings, "repo">>().notNull(),
 })
 
-/** glance's comment on each pull request */
+/** mekiki's comment on each pull request */
 export const panels = snakeCase.table(
   "panels",
   {
@@ -121,7 +121,7 @@ export const authVerifications = snakeCase.table(
 )
 
 /**
- * the sso plugin's providers. glance's one provider comes from the environment and isn't stored,
+ * the sso plugin's providers. mekiki's one provider comes from the environment and isn't stored,
  * and registering more is turned off: the table is there because the plugin looks in it
  */
 export const ssoProviders = snakeCase.table("sso_providers", {

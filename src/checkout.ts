@@ -51,7 +51,7 @@ export interface Interface {
   readonly at: (pr: PrRef, sha: string) => Effect.Effect<string, CheckoutError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Checkout") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Checkout") {}
 
 interface Key {
   readonly pr: PrRef
@@ -154,7 +154,7 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
     }
     const git = (args: ReadonlyArray<string>, what: string, more: { stdin?: string; env?: Record<string, string> } = {}) =>
       run(
-        // nothing of glance's environment beyond what git needs: no database url, no secrets
+        // nothing of mekiki's environment beyond what git needs: no database url, no secrets
         ChildProcess.make("git", [...args], {
           env: childEnv({ ...env, ...more.env }),
           ...(more.stdin === undefined ? {} : { stdin: Stream.encodeText(Stream.make(more.stdin)) }),
@@ -268,9 +268,9 @@ export const make = Effect.fn("Checkout.make")(function* (options: Options) {
       // a repository is removed between fetches, never under one
       yield* victim.path.endsWith(".git") ? locked(victim.path)(remove) : remove
       used -= size
-      yield* Effect.logInfo(`the checkouts are over GLANCE_DISK_BUDGET_MB: removed ${victim.path}`)
+      yield* Effect.logInfo(`the checkouts are over MEKIKI_DISK_BUDGET_MB: removed ${victim.path}`)
     }
-    if (used > budget) yield* Effect.logWarning(`the checkouts use ${Math.round(used / 1024)} MB, over GLANCE_DISK_BUDGET_MB, with nothing left to remove`)
+    if (used > budget) yield* Effect.logWarning(`the checkouts use ${Math.round(used / 1024)} MB, over MEKIKI_DISK_BUDGET_MB, with nothing left to remove`)
   }).pipe(Effect.catch((error) => Effect.logWarning("couldn't prune checkouts", error)))
 
   // Coalesce prune requests into one pending pass. The worker stops before its filesystem and

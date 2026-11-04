@@ -30,24 +30,24 @@ const review: Review = {
   usage: null,
 }
 
-const tick = (body: string, depth: string) => body.replace(new RegExp(`- \\[ \\](.*<!-- glance:${depth} -->)`), "- [x]$1")
+const tick = (body: string, depth: string) => body.replace(new RegExp(`- \\[ \\](.*<!-- mekiki:${depth} -->)`), "- [x]$1")
 
 test("a ticked box is the depth to review at", () => {
   const panel = render({ kind: "waiting" })
   expect(tickedDepth(tick(panel, "high"), panel)).toBe("high")
   expect(tickedDepth(tick(panel, "light"), panel)).toBe("light")
-  // edits without a fresh tick, including glance's own re-renders, start nothing
+  // edits without a fresh tick, including mekiki's own re-renders, start nothing
   expect(tickedDepth(panel, panel)).toBeUndefined()
   expect(tickedDepth(render({ kind: "running", depth: "high" }), tick(panel, "high"))).toBeUndefined()
   // several at once: the deepest
   expect(tickedDepth(tick(tick(panel, "light"), "medium"), panel)).toBe("medium")
   // a box that was already ticked isn't a new tick
   expect(tickedDepth(tick(tick(panel, "light"), "high"), tick(panel, "high"))).toBe("light")
-  // not glance's comment
-  expect(tickedDepth("- [x] High <!-- glance:high -->", "")).toBeUndefined()
+  // not mekiki's comment
+  expect(tickedDepth("- [x] High <!-- mekiki:high -->", "")).toBeUndefined()
 })
 
-test("renders every state with unticked boxes and no command glance would answer", () => {
+test("renders every state with unticked boxes and no command mekiki would answer", () => {
   const states = [
     render({ kind: "waiting" }),
     render({ kind: "running", depth: "medium" }),
@@ -58,7 +58,7 @@ test("renders every state with unticked boxes and no command glance would answer
   for (const body of states) {
     expect(body.match(/- \[ \]/g)).toHaveLength(3)
     expect(body).not.toMatch(/\[x\]/i)
-    expect(body).not.toMatch(/(^|\s)(\/glance|@glance)\b/i)
+    expect(body).not.toMatch(/(^|\s)(\/mekiki|@mekiki)\b/i)
   }
   expect(states[2]).toContain("✅ Reviewed `abcdef1` at **Light** in 12.3s: no issues found.")
   expect(states[3]).toContain("🔁 New commits since: `abcdef1` → `9999999`.")

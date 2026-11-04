@@ -11,9 +11,9 @@ export type Depth = typeof Depth.Type
 /** the reasoning effort each depth runs at, in every agent */
 export const EFFORT: Record<Depth, "low" | "medium" | "high"> = { light: "low", medium: "medium", high: "high" }
 
-/** a depth named in a label or comment: `glance:high`, `glance-light`, `/glance medium` */
+/** a depth named in a label or comment: `mekiki:high`, `mekiki-light`, `/mekiki medium` */
 export const depthIn = (text: string): Depth | undefined => {
-  const m = text.match(/(?:^|[\s/@])glance(?:[:/ -]|\s+)(light|medium|high)\b/i)
+  const m = text.match(/(?:^|[\s/@])mekiki(?:[:/ -]|\s+)(light|medium|high)\b/i)
   return m?.[1] ? Option.getOrUndefined(Schema.decodeUnknownOption(Depth)(m[1].toLowerCase())) : undefined
 }
 

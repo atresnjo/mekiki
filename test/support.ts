@@ -75,6 +75,7 @@ export const fakeReviewer = (calls: Calls) =>
 export const fakeAgent = Layer.succeed(
   Agent.Service,
   Agent.Service.of({
+    offered: ["claude", "codex", "api"],
     check: (agent) => Effect.succeed(`${agent} 1.0`),
     models: (agent) =>
       Effect.succeed(
@@ -170,4 +171,4 @@ export const memoryDatabase = Layer.effect(
   }),
 ).pipe(Layer.provide(PgliteClient.layer()), Layer.orDie)
 
-export const memoryStore = (config: AppConfig) => Store.layer({ defaults: config.defaults }).pipe(Layer.provide(memoryDatabase))
+export const memoryStore = (config: AppConfig) => Store.layer({ defaults: config.defaults, clis: config.agent.clis }).pipe(Layer.provide(memoryDatabase))

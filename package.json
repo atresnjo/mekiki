@@ -1,5 +1,5 @@
 {
-  "name": "glance",
+  "name": "mekiki",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,6 @@
     "start": "bun src/main.ts",
     "preview": "vite preview web",
     "review": "bun src/cli.ts",
-    "tunnel": "bun scripts/tunnel.ts",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "test": "bun test",

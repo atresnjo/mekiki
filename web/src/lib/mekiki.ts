@@ -1,14 +1,14 @@
-// glance's server, as atoms. reads are query atoms keyed for reactivity; writes are mutations that
+// mekiki's server, as atoms. reads are query atoms keyed for reactivity; writes are mutations that
 // invalidate what they change; the review feed follows the server's stream, reconnecting
 import { useAtomValue } from "@effect/atom-react"
-import { GlanceRpcs, HEARTBEAT, PAGE, RPC_PATH, type Review, type ReviewsEvent } from "@glance/api"
+import { MekikiRpcs, HEARTBEAT, PAGE, RPC_PATH, type Review, type ReviewsEvent } from "@mekiki/api"
 import { Cause, Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 
-export type { Depth, Finding, Models, ProviderUsage, RepoSettings, Review, Settings, Severity, Status, User } from "@glance/api"
-export { isLogin, isRepo, LIST_MAX, repoIn, repoSettings, RULES_MAX } from "@glance/api"
+export type { Depth, Finding, Models, ProviderUsage, RepoSettings, Review, Settings, Severity, Status, User } from "@mekiki/api"
+export { isLogin, isRepo, LIST_MAX, repoIn, repoSettings, RULES_MAX } from "@mekiki/api"
 
 // the api lives on this origin: vite forwards /api/ to it in dev, a reverse proxy does in production
 
@@ -16,8 +16,8 @@ export { isLogin, isRepo, LIST_MAX, repoIn, repoSettings, RULES_MAX } from "@gla
 
 // ---------- client ----------
 
-export class Glance extends AtomRpc.Service<Glance>()("Glance", {
-  group: GlanceRpcs,
+export class Mekiki extends AtomRpc.Service<Mekiki>()("Mekiki", {
+  group: MekikiRpcs,
   // the session cookie goes along on its own: same origin
   protocol: RpcClient.layerProtocolHttp({ url: new URL(RPC_PATH, window.location.origin).href }).pipe(
     Layer.provide([FetchHttpClient.layer, RpcSerialization.layerNdjson]),
@@ -26,25 +26,25 @@ export class Glance extends AtomRpc.Service<Glance>()("Glance", {
 
 // ---------- reads ----------
 
-export const usageAtom = Glance.query("GetUsage", undefined)
-export const statusAtom = Glance.query("GetStatus", undefined)
+export const usageAtom = Mekiki.query("GetUsage", undefined)
+export const statusAtom = Mekiki.query("GetStatus", undefined)
 /** the model lists cost the server a process spawn: mounted only by the settings dialog */
-export const modelsAtom = Glance.query("GetModels", undefined)
-export const settingsAtom = Glance.query("GetSettings", undefined, { reactivityKeys: ["settings"] })
-export const repoSettingsAtom = Glance.query("GetRepoSettings", undefined, { reactivityKeys: ["settings"] })
+export const modelsAtom = Mekiki.query("GetModels", undefined)
+export const settingsAtom = Mekiki.query("GetSettings", undefined, { reactivityKeys: ["settings"] })
+export const repoSettingsAtom = Mekiki.query("GetRepoSettings", undefined, { reactivityKeys: ["settings"] })
 /** what adding a repository suggests: mounted only by the settings dialog */
-/** what adding a repository suggests: where glance is installed, and what it has reviewed */
-export const reposAtom = Glance.query("GetRepos", undefined)
+/** what adding a repository suggests: where mekiki is installed, and what it has reviewed */
+export const reposAtom = Mekiki.query("GetRepos", undefined)
 
 // ---------- writes: run with useAtomSet(…, { mode: "promiseExit" }), which keeps which error it was ----------
 
-export const startReview = Glance.mutation("StartReview")
-export const retryReview = Glance.mutation("RetryReview")
-export const cancelReview = Glance.mutation("CancelReview")
+export const startReview = Mekiki.mutation("StartReview")
+export const retryReview = Mekiki.mutation("RetryReview")
+export const cancelReview = Mekiki.mutation("CancelReview")
 /** run with reactivityKeys ["settings"]: the settings on screen load again */
-export const saveSettings = Glance.mutation("SaveSettings")
-export const saveRepoSettings = Glance.mutation("SaveRepoSettings")
-export const deleteRepoSettings = Glance.mutation("DeleteRepoSettings")
+export const saveSettings = Mekiki.mutation("SaveSettings")
+export const saveRepoSettings = Mekiki.mutation("SaveRepoSettings")
+export const deleteRepoSettings = Mekiki.mutation("DeleteRepoSettings")
 
 // every way a call fails has a message: its own errors, Unauthorized, the rpc client's
 export type Failure = { readonly message: string }
@@ -86,10 +86,10 @@ const step = (feed: Feed, event: FeedStep): Feed => {
 }
 
 /** every review, kept current by the server's stream. a dropped connection is tried again; the new snapshot has what was missed */
-export const feedAtom = Glance.runtime.atom(
+export const feedAtom = Mekiki.runtime.atom(
   Stream.unwrap(
     Effect.gen(function* () {
-      const client = yield* Glance
+      const client = yield* Mekiki
       return client("WatchReviews", undefined)
     }),
   ).pipe(
@@ -119,9 +119,9 @@ export interface Older {
 export const olderAtom = Atom.make<Older>({ reviews: [], done: false }).pipe(Atom.keepAlive)
 
 /** the next page, before the oldest review loaded so far */
-export const loadOlder = Glance.runtime.fn(
-  Effect.fn("Glance.loadOlder")(function* (before: number, get: Atom.FnContext) {
-    const client = yield* Glance
+export const loadOlder = Mekiki.runtime.fn(
+  Effect.fn("Mekiki.loadOlder")(function* (before: number, get: Atom.FnContext) {
+    const client = yield* Mekiki
     const page = yield* client("ListReviews", { before })
     const older = get(olderAtom)
     get.set(olderAtom, { reviews: [...older.reviews, ...page], done: page.length < PAGE })

@@ -12,7 +12,7 @@ import { Triggers } from "../src/triggers.ts"
 import { type Calls, configFrom, fakeCheckout, fakeGitHub, fakePanel, fakeReviewer, memoryStore } from "./support.ts"
 
 const SECRET = "whsec"
-const config = configFrom({ GITHUB_WEBHOOK_SECRET: SECRET, GITHUB_WEBHOOK_MAX_BYTES: "10000", GLANCE_REVIEWS_PER_USER_HOUR: "5" })
+const config = configFrom({ GITHUB_WEBHOOK_SECRET: SECRET, GITHUB_WEBHOOK_MAX_BYTES: "10000", MEKIKI_REVIEWS_PER_USER_HOUR: "5" })
 const calls: Calls = { started: [], cancelled: [] }
 const acknowledged: Array<number> = []
 const shown: Array<{ readonly pr: PrRef; readonly kind: string }> = []
@@ -21,7 +21,7 @@ const github = fakeGitHub(acknowledged, { maintainer: "maintain", writer: "write
 const services = Layer.mergeAll(memoryStore(config), fakeReviewer(calls), fakePanel(shown), fakeCheckout, Triggers.layer(config.triggers)).pipe(
   Layer.provideMerge(github),
 )
-// glance's comment on acme/api#7 is comment 500
+// mekiki's comment on acme/api#7 is comment 500
 const seeded = Layer.effectDiscard(Effect.flatMap(Store.Service, (store) => store.savePanel("acme/api", 7, 500)))
 const { handler, dispose } = HttpRouter.toWebHandler(
   Layer.mergeAll(Http.routes(config), seeded).pipe(Layer.provide(services), Layer.provide(BunServices.layer)),
@@ -33,7 +33,7 @@ let deliveries = 0
 const deliver = (event: string, payload: unknown, options: { readonly delivery?: string; readonly signature?: string } = {}) => {
   const body = JSON.stringify(payload)
   return handler(
-    new Request("http://glance/api/webhooks/github", {
+    new Request("http://mekiki/api/webhooks/github", {
       method: "POST",
       body,
       headers: {
@@ -70,7 +70,7 @@ const tick = (id: number, by: string) => {
   return {
     action: "edited",
     issue: { number: 7, pull_request: {} },
-    comment: { id, body: before.replace(/- \[ \] (\*\*High\*\*)/, "- [x] $1"), user: user("glance[bot]", "Bot") },
+    comment: { id, body: before.replace(/- \[ \] (\*\*High\*\*)/, "- [x] $1"), user: user("mekiki[bot]", "Bot") },
     changes: { body: { from: before } },
     repository,
     sender: user(by),
@@ -84,8 +84,8 @@ test("a delivery that isn't signed with the secret is refused", async () => {
 
 test("a redelivered delivery is acted on once", async () => {
   const before = calls.started.length
-  const first = await deliver("pull_request", pullRequest("labeled", { label: { name: "glance:high" } }), { delivery: "same" })
-  const again = await deliver("pull_request", pullRequest("labeled", { label: { name: "glance:high" } }), { delivery: "same" })
+  const first = await deliver("pull_request", pullRequest("labeled", { label: { name: "mekiki:high" } }), { delivery: "same" })
+  const again = await deliver("pull_request", pullRequest("labeled", { label: { name: "mekiki:high" } }), { delivery: "same" })
   expect(first.status).toBe(202)
   expect(await again.json()).toEqual({ ok: true, duplicate: true })
   expect(calls.started.length - before).toBe(1)
@@ -104,8 +104,8 @@ test("closing a pull request cancels its review", async () => {
   expect(calls.cancelled.at(-1)).toEqual({ owner: "acme", repo: "api", number: 7 })
 })
 
-test("/glance high in a comment starts a review at high and says it saw it", async () => {
-  const response = await deliver("issue_comment", comment("/glance high please", "writer"))
+test("/mekiki high in a comment starts a review at high and says it saw it", async () => {
+  const response = await deliver("issue_comment", comment("/mekiki high please", "writer"))
   expect(response.status).toBe(202)
   expect(calls.started.at(-1)?.options).toMatchObject({ trigger: "comment high", overrides: { depth: "high" } })
   expect(acknowledged).toContain(42)
@@ -121,11 +121,11 @@ test("in ask mode an opened pull request gets the checkboxes, not a review", asy
 
 test("a comment command from someone without write permission starts nothing", async () => {
   const before = calls.started.length
-  const reader = await deliver("issue_comment", comment("/glance high", "reader"))
-  const stranger = await deliver("issue_comment", comment("/glance", "drive-by"))
+  const reader = await deliver("issue_comment", comment("/mekiki high", "reader"))
+  const stranger = await deliver("issue_comment", comment("/mekiki", "drive-by"))
   const bot = await deliver(
     "issue_comment",
-    comment("/glance", "dependabot[bot]", { comment: { id: 43, body: "/glance", user: user("dependabot[bot]", "Bot") } }),
+    comment("/mekiki", "dependabot[bot]", { comment: { id: 43, body: "/mekiki", user: user("dependabot[bot]", "Bot") } }),
   )
   expect(await reader.json()).toMatchObject({ reviewing: false, refused: expect.stringContaining("read permission") })
   expect(await stranger.json()).toMatchObject({ reviewing: false })
@@ -133,11 +133,11 @@ test("a comment command from someone without write permission starts nothing", a
   expect(calls.started.length).toBe(before)
 })
 
-test("a ticked box counts only in glance's own comment, and only from someone who may", async () => {
+test("a ticked box counts only in mekiki's own comment, and only from someone who may", async () => {
   const before = calls.started.length
   const copy = await deliver("issue_comment", tick(999, "maintainer"))
   const reader = await deliver("issue_comment", tick(500, "reader"))
-  expect(await copy.json()).toMatchObject({ reviewing: false, refused: "not glance's comment" })
+  expect(await copy.json()).toMatchObject({ reviewing: false, refused: "not mekiki's comment" })
   expect(await reader.json()).toMatchObject({ reviewing: false })
   expect(calls.started.length).toBe(before)
   const maintainer = await deliver("issue_comment", tick(500, "maintainer"))
@@ -147,19 +147,19 @@ test("a ticked box counts only in glance's own comment, and only from someone wh
 
 test("a label from someone without the permission starts nothing", async () => {
   const before = calls.started.length
-  const response = await deliver("pull_request", pullRequest("labeled", { label: { name: "glance:high" }, sender: user("reader") }))
+  const response = await deliver("pull_request", pullRequest("labeled", { label: { name: "mekiki:high" }, sender: user("reader") }))
   expect(await response.json()).toMatchObject({ reviewing: false })
   expect(calls.started.length).toBe(before)
 })
 
 test("each person gets a few reviews an hour", async () => {
   const statuses: Array<number> = []
-  for (let i = 0; i < 6; i++) statuses.push((await deliver("issue_comment", comment("/glance", "spammer"))).status)
+  for (let i = 0; i < 6; i++) statuses.push((await deliver("issue_comment", comment("/mekiki", "spammer"))).status)
   expect(statuses).toEqual([202, 202, 202, 202, 202, 429])
 })
 
 test("in auto mode a stranger's pull request gets the checkboxes; a collaborator's is reviewed", async () => {
-  const auto = configFrom({ GITHUB_WEBHOOK_SECRET: SECRET, GLANCE_MODE: "auto" })
+  const auto = configFrom({ GITHUB_WEBHOOK_SECRET: SECRET, MEKIKI_MODE: "auto" })
   const autoCalls: Calls = { started: [], cancelled: [] }
   const autoShown: Array<{ readonly pr: PrRef; readonly kind: string }> = []
   const web = HttpRouter.toWebHandler(
@@ -176,7 +176,7 @@ test("in auto mode a stranger's pull request gets the checkboxes; a collaborator
   const send = (payload: unknown) => {
     const body = JSON.stringify(payload)
     return web.handler(
-      new Request("http://glance/api/webhooks/github", {
+      new Request("http://mekiki/api/webhooks/github", {
         method: "POST",
         body,
         headers: { "x-github-event": "pull_request", "x-hub-signature-256": `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}` },
@@ -193,7 +193,7 @@ test("in auto mode a stranger's pull request gets the checkboxes; a collaborator
   await web.dispose()
 })
 
-test("a delivery glance failed handling is let go, so its redelivery is acted on; a malformed one isn't", async () => {
+test("a delivery mekiki failed handling is let go, so its redelivery is acted on; a malformed one isn't", async () => {
   // the first review start finds the database down, the next one works
   let outages = 1
   const flaky = Layer.effect(
@@ -218,7 +218,7 @@ test("a delivery glance failed handling is let go, so its redelivery is acted on
   const send = (payload: unknown, delivery: string) => {
     const body = JSON.stringify(payload)
     return web.handler(
-      new Request("http://glance/api/webhooks/github", {
+      new Request("http://mekiki/api/webhooks/github", {
         method: "POST",
         body,
         headers: {
@@ -229,7 +229,7 @@ test("a delivery glance failed handling is let go, so its redelivery is acted on
       }),
     )
   }
-  const labeled = pullRequest("labeled", { label: { name: "glance:high" } })
+  const labeled = pullRequest("labeled", { label: { name: "mekiki:high" } })
   expect((await send(labeled, "outage")).status).toBe(500)
   expect((await send(labeled, "outage")).status).toBe(202)
   expect((await send({ action: "opened" }, "malformed")).status).toBe(400)
@@ -256,7 +256,7 @@ const harness = (env: Record<string, string>, seed: (store: Store.Interface) => 
   const send = (event: string, payload: unknown) => {
     const body = JSON.stringify(payload)
     return web.handler(
-      new Request("http://glance/api/webhooks/github", {
+      new Request("http://mekiki/api/webhooks/github", {
         method: "POST",
         body,
         headers: { "x-github-event": event, "x-hub-signature-256": `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}` },
@@ -269,9 +269,9 @@ const harness = (env: Record<string, string>, seed: (store: Store.Interface) => 
 const openedBy = (login: string, type = "User", repo = repository) =>
   pullRequest("opened", { pull_request: { draft: false, head: { sha: "b1" }, labels: [], user: user(login, type) }, repository: repo })
 
-test("a blocked author's pull request gets no review and no comment; /glance still reviews it", async () => {
+test("a blocked author's pull request gets no review and no comment; /mekiki still reviews it", async () => {
   // blocked globally from the environment, and in acme/api of its own (any case, as on github)
-  const web = harness({ GLANCE_MODE: "auto", GLANCE_BLOCKED_AUTHORS: "dependabot[bot]" }, (store) =>
+  const web = harness({ MEKIKI_MODE: "auto", MEKIKI_BLOCKED_AUTHORS: "dependabot[bot]" }, (store) =>
     store.saveRepoSettings({ ...repoSettings("acme/api"), mode: "ask", blockedAuthors: ["Renovate[bot]"] }),
   )
   const dependabot = await web.send("pull_request", openedBy("dependabot[bot]", "Bot"))
@@ -281,14 +281,14 @@ test("a blocked author's pull request gets no review and no comment; /glance sti
   expect(web.calls.started).toEqual([])
   expect(web.shown).toEqual([])
   // someone who may can still ask for it
-  const asked = await web.send("issue_comment", comment("/glance high", "maintainer"))
+  const asked = await web.send("issue_comment", comment("/mekiki high", "maintainer"))
   expect(asked.status).toBe(202)
   expect(web.calls.started.map((s) => s.options.trigger)).toEqual(["comment high"])
   await web.dispose()
 })
 
 test("with allowed authors, only theirs are reviewed right away in auto mode; the rest get the checkboxes", async () => {
-  const web = harness({ GLANCE_MODE: "auto" }, (store) =>
+  const web = harness({ MEKIKI_MODE: "auto" }, (store) =>
     Effect.flatMap(store.settings, (settings) => store.saveSettings({ ...settings, allowedAuthors: ["Maintainer"] })),
   )
   const writer = await web.send("pull_request", openedBy("writer"))
@@ -302,7 +302,7 @@ test("with allowed authors, only theirs are reviewed right away in auto mode; th
 })
 
 test("a repository's own mode and depth replace the global ones; other repositories keep the global settings", async () => {
-  const web = harness({ GLANCE_MODE: "ask" }, (store) => store.saveRepoSettings({ ...repoSettings("Acme/API"), mode: "auto", depth: "high" }))
+  const web = harness({ MEKIKI_MODE: "ask" }, (store) => store.saveRepoSettings({ ...repoSettings("Acme/API"), mode: "auto", depth: "high" }))
   const own = await web.send("pull_request", openedBy("writer"))
   expect(own.status).toBe(202)
   expect(await own.json()).toMatchObject({ reviewing: true, depth: "high" })

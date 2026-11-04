@@ -1,4 +1,4 @@
-// glance resolving its own threads once their problem is fixed: the rules (plain code), then the whole
+// mekiki resolving its own threads once their problem is fixed: the rules (plain code), then the whole
 // pipeline against a local github fixture speaking rest and graphql, enterprise-style (/api/v3, /api/graphql)
 import { afterAll, describe, expect, test } from "bun:test"
 import { BunServices } from "@effect/platform-bun"
@@ -23,7 +23,7 @@ const finding = (overrides: Partial<Finding>): Finding => ({
 
 const agentInfo = { kind: "claude", model: "", depth: "light" } as const
 
-/** a comment in a thread: `ours` when glance's login wrote it */
+/** a comment in a thread: `ours` when mekiki's login wrote it */
 const said = (body: string, ours: boolean, extra: Partial<ReviewThread["comments"][number]> = {}) => ({
   id: `c-${body.length}`,
   body,
@@ -33,7 +33,7 @@ const said = (body: string, ours: boolean, extra: Partial<ReviewThread["comments
   ...extra,
 })
 
-/** a thread glance started on `f`, outdated and open unless said otherwise */
+/** a thread mekiki started on `f`, outdated and open unless said otherwise */
 const thread = (id: string, f: Finding, overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id,
   resolved: false,
@@ -48,7 +48,7 @@ const thread = (id: string, f: Finding, overrides: Partial<ReviewThread> = {}): 
 describe("which threads are fixed", () => {
   const reviewed = new Set(["src/a.ts"])
 
-  test("an outdated thread of glance's that the review didn't find again", () => {
+  test("an outdated thread of mekiki's that the review didn't find again", () => {
     const threads = [thread("t1", finding({}))]
     expect(fixedThreads(threads, { reviewed, findings: [] }).map((t) => t.id)).toEqual(["t1"])
     // a different problem elsewhere in the file doesn't keep it open
@@ -64,7 +64,7 @@ describe("which threads are fixed", () => {
     expect(fixedThreads(threads, { reviewed, findings: [finding({ line: 22, title: "Unescaped user input", category: "security" })] })).toEqual([])
   })
 
-  test("not outdated, already resolved or hidden, in a file this review didn't read, or reopened after glance resolved it: stays as it is", () => {
+  test("not outdated, already resolved or hidden, in a file this review didn't read, or reopened after mekiki resolved it: stays as it is", () => {
     const f = finding({})
     const reopened = thread("t6", f, {
       comments: [said(commentBody(f, agentInfo), true), said(fixedReply("abcdef1234"), true)],
@@ -74,14 +74,14 @@ describe("which threads are fixed", () => {
     expect(fixedThreads(threads, { reviewed, findings: [] })).toEqual([])
   })
 
-  test("never a thread glance didn't start", () => {
+  test("never a thread mekiki didn't start", () => {
     const f = finding({})
     const threads = [
-      // someone else's, even one copying glance's mark
+      // someone else's, even one copying mekiki's mark
       thread("theirs", f, { comments: [said(commentBody(f, agentInfo), false)] }),
-      // glance's login (a personal token) writing by hand: no mark
+      // mekiki's login (a personal token) writing by hand: no mark
       thread("by hand", f, { comments: [said("please rename this", true)] }),
-      // glance only replied in it
+      // mekiki only replied in it
       thread("replied", f, {
         comments: [said("looks wrong", false), said(commentBody(f, agentInfo), true)],
       }),
@@ -91,7 +91,7 @@ describe("which threads are fixed", () => {
 
   test("the mark survives any title", () => {
     const tricky = finding({ title: "Closes --> the <!-- comment --> early" })
-    expect(commentBody(tricky, agentInfo)).toEndWith(`<!-- glance:finding bug ${encodeURIComponent(tricky.title)} -->`)
+    expect(commentBody(tricky, agentInfo)).toEndWith(`<!-- mekiki:finding bug ${encodeURIComponent(tricky.title)} -->`)
     expect(fixedThreads([thread("t", tricky)], { reviewed, findings: [finding({ line: 9, title: tricky.title, category: "security" })] })).toEqual([])
   })
 })
@@ -108,7 +108,7 @@ const SHA = "def4567890abcdef"
 const fixed = finding({})
 const sql = finding({ line: 20, title: "SQL injection in query", category: "security" })
 const leak = finding({ line: 40, title: "Leaks the file handle", category: "reliability" })
-const glance = (f: Finding) => ({ id: `c-${f.line}`, body: commentBody(f, agentInfo), viewerDidAuthor: true, viewerCanMinimize: true, isMinimized: false })
+const mekiki = (f: Finding) => ({ id: `c-${f.line}`, body: commentBody(f, agentInfo), viewerDidAuthor: true, viewerCanMinimize: true, isMinimized: false })
 const node = (id: string, f: Finding, overrides: Record<string, unknown> = {}) => ({
   id,
   isResolved: false,
@@ -117,17 +117,17 @@ const node = (id: string, f: Finding, overrides: Record<string, unknown> = {}) =
   line: null,
   originalLine: f.line,
   viewerCanResolve: true,
-  comments: { nodes: [glance(f)] },
+  comments: { nodes: [mekiki(f)] },
   ...overrides,
 })
-// two pages: glance's fixed thread is on each
+// two pages: mekiki's fixed thread is on each
 const PAGES = [
   [
     node("fixed", fixed),
     node("found-again", sql),
     node("current", leak, { isOutdated: false, line: 40 }),
-    node("theirs", fixed, { comments: { nodes: [{ ...glance(fixed), viewerDidAuthor: false, viewerCanMinimize: false }] } }),
-    node("by-hand", fixed, { comments: { nodes: [{ ...glance(fixed), body: "please rename this" }] } }),
+    node("theirs", fixed, { comments: { nodes: [{ ...mekiki(fixed), viewerDidAuthor: false, viewerCanMinimize: false }] } }),
+    node("by-hand", fixed, { comments: { nodes: [{ ...mekiki(fixed), body: "please rename this" }] } }),
   ],
   [node("done", fixed, { isResolved: true }), node("fixed-too", leak)],
 ]
@@ -142,10 +142,10 @@ const requests: Array<Request> = []
 const graphql = () => requests.filter((r) => r.path === "/api/graphql")
 const resolutions = () => graphql().filter((r) => r.body.query?.includes("resolveReviewThread"))
 const collapses = () => graphql().filter((r) => r.body.query?.includes("minimizeComment"))
-// pull request 4: glance's app may reply but not resolve (no write access to the contents)
+// pull request 4: mekiki's app may reply but not resolve (no write access to the contents)
 const LOCKED = [
   node("may-hide", fixed, { viewerCanResolve: false }),
-  node("may-not", leak, { viewerCanResolve: false, comments: { nodes: [{ ...glance(leak), viewerCanMinimize: false }] } }),
+  node("may-not", leak, { viewerCanResolve: false, comments: { nodes: [{ ...mekiki(leak), viewerCanMinimize: false }] } }),
 ]
 
 const server = Bun.serve({
@@ -213,7 +213,7 @@ const review = (number: number, start: StartOptions, env: Record<string, string>
 }
 
 describe("after a review", () => {
-  test("glance's outdated threads it didn't find again are resolved, every page read; nothing else is touched", async () => {
+  test("mekiki's outdated threads it didn't find again are resolved, every page read; nothing else is touched", async () => {
     const done: Review = await review(1, { trigger: "manual" })
     expect(done.status).toBe("done")
     expect(done.posted).toBe(true)
@@ -232,14 +232,14 @@ describe("after a review", () => {
     expect(graphql().every((r) => r.method === "POST" && r.authorization === "Bearer fixture-token")).toBe(true)
     // the inline comment it posted carries the mark that finds it again
     const posted = requests.find((r) => r.path.endsWith("/reviews"))?.body
-    expect(JSON.stringify(posted)).toContain("<!-- glance:finding security SQL%20injection%20in%20the%20query%20builder -->")
+    expect(JSON.stringify(posted)).toContain("<!-- mekiki:finding security SQL%20injection%20in%20the%20query%20builder -->")
   })
 
-  test("a dry run, a review that posts nothing, or GLANCE_RESOLVE_FIXED=false resolves nothing", async () => {
+  test("a dry run, a review that posts nothing, or MEKIKI_RESOLVE_FIXED=false resolves nothing", async () => {
     for (const [start, env] of [
       [{ trigger: "manual", dryRun: true }, {}],
       [{ trigger: "manual", overrides: { postComments: false } }, {}],
-      [{ trigger: "manual" }, { GLANCE_RESOLVE_FIXED: "false" }],
+      [{ trigger: "manual" }, { MEKIKI_RESOLVE_FIXED: "false" }],
     ] as const) {
       const done = await review(2, start, env)
       expect(done.status).toBe("done")
@@ -256,13 +256,13 @@ describe("after a review", () => {
     expect(resolutions()).toEqual([])
   })
 
-  test("where github won't let glance resolve, it hides its own fixed comment as outdated; where it can't do that either, it leaves the thread be", async () => {
+  test("where github won't let mekiki resolve, it hides its own fixed comment as outdated; where it can't do that either, it leaves the thread be", async () => {
     const done = await review(4, { trigger: "manual" })
     expect(done.status).toBe("done")
     expect(resolutions()).toEqual([])
     expect(collapses().map((r) => [r.body.variables?.thread, r.body.variables?.comment])).toEqual([["may-hide", `c-${fixed.line}`]])
     expect(collapses()[0]?.body.query).toContain("classifier: OUTDATED")
-    // no "fixed" reply on a thread glance can't close
+    // no "fixed" reply on a thread mekiki can't close
     expect(graphql().filter((r) => r.body.variables?.thread === "may-not")).toEqual([])
   })
 })

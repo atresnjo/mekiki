@@ -40,7 +40,7 @@ export interface Limits {
 }
 
 export interface Options {
-  /** after a review, resolve glance's own threads whose problem is gone: see fixedThreads */
+  /** after a review, resolve mekiki's own threads whose problem is gone: see fixedThreads */
   readonly resolveFixed: boolean
 }
 
@@ -64,7 +64,7 @@ export interface Interface {
   readonly subscribe: Effect.Effect<PubSub.Subscription<Review>, never, Scope.Scope>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Reviewer") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Reviewer") {}
 
 class Skip extends Schema.TaggedError<Skip>()("Skip", { reason: Schema.String }) {}
 
@@ -119,12 +119,12 @@ export const triage = (
 }
 
 /**
- * hidden in each inline comment: how glance knows its own threads again, and what each was about.
+ * hidden in each inline comment: how mekiki knows its own threads again, and what each was about.
  * the title is uri-encoded, so it can't close the html comment
  */
-const FINDING = /<!-- glance:finding (\w+) (\S*) -->/
-/** hidden in glance's "fixed" reply: a thread it resolved once, and someone reopened, is left to them */
-const FIXED = "<!-- glance:fixed -->"
+const FINDING = /<!-- mekiki:finding (\w+) (\S*) -->/
+/** hidden in mekiki's "fixed" reply: a thread it resolved once, and someone reopened, is left to them */
+const FIXED = "<!-- mekiki:fixed -->"
 
 /** why files weren't reviewed, counted: "5 binary, 1 generated or lockfile" */
 export const skippedSummary = (skipped: ReadonlyArray<{ readonly reason: string }>) => {
@@ -144,13 +144,13 @@ export const commentBody = (f: Finding, agent: { readonly kind: AgentKind; reado
     `${ICON[f.severity]} **${f.title}**`,
     f.body,
     f.suggestion === null ? "" : suggestionBlock(f.suggestion),
-    `<sub>${f.severity} · ${f.category} · ${Math.round(f.confidence * 100)}% · glance/${agent.kind}${agent.model ? ` ${agent.model}` : ""} ${agent.depth}</sub>`,
-    `<!-- glance:finding ${f.category} ${encodeURIComponent(f.title)} -->`,
+    `<sub>${f.severity} · ${f.category} · ${Math.round(f.confidence * 100)}% · mekiki/${agent.kind}${agent.model ? ` ${agent.model}` : ""} ${agent.depth}</sub>`,
+    `<!-- mekiki:finding ${f.category} ${encodeURIComponent(f.title)} -->`,
   ]
     .filter(Boolean)
     .join("\n\n")
 
-export const fixedReply = (sha: string) => `✅ Fixed in ${sha.slice(0, 7)}: glance doesn't find this any more.\n\n${FIXED}`
+export const fixedReply = (sha: string) => `✅ Fixed in ${sha.slice(0, 7)}: mekiki doesn't find this any more.\n\n${FIXED}`
 
 const decoded = (s: string) => {
   try {
@@ -176,10 +176,10 @@ const similar = (a: string, b: string) => {
 }
 
 /**
- * glance's threads whose problem looks fixed: unresolved, the code under them changed since (github
+ * mekiki's threads whose problem looks fixed: unresolved, the code under them changed since (github
  * says outdated), in a file this review read, and not found again near there. the agent's every
  * finding counts, even one triage dropped (said before, unsure): only what it didn't say again is
- * fixed. never a thread someone else started, nor one glance already resolved once
+ * fixed. never a thread someone else started, nor one mekiki already resolved once
  */
 export const fixedThreads = (
   threads: ReadonlyArray<GitHub.ReviewThread>,
@@ -212,10 +212,10 @@ export const reviewBody = (
   const found = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
   // partial: "no issues" would claim more than was looked at
   const counts = missing > 0 ? `${found} in the files reviewed` : found
-  const lines = [`### glance`]
+  const lines = [`### mekiki`]
   if (missing > 0)
     lines.push(
-      `> [!WARNING]\n> **Partial review: ${missing} of ${review.files} file${review.files === 1 ? "" : "s"} couldn't be reviewed**${notes.failure ? ` (${notes.failure.slice(0, 200)})` : ""}. Tick a depth in glance's comment to try again.`,
+      `> [!WARNING]\n> **Partial review: ${missing} of ${review.files} file${review.files === 1 ? "" : "s"} couldn't be reviewed**${notes.failure ? ` (${notes.failure.slice(0, 200)})` : ""}. Tick a depth in mekiki's comment to try again.`,
     )
   lines.push(
     review.summary,
@@ -267,7 +267,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
               ? github.collapseThread(ref, t.id, first.id, fixedReply(sha)).pipe(Effect.as("collapsed" as const))
               : Effect.succeed(undefined)
           return close.pipe(
-            Effect.catchTag("GitHubError", (error) => Effect.logWarning(`couldn't close glance's thread on ${t.path}`, error).pipe(Effect.as(undefined))),
+            Effect.catchTag("GitHubError", (error) => Effect.logWarning(`couldn't close mekiki's thread on ${t.path}`, error).pipe(Effect.as(undefined))),
           )
         },
         { concurrency: 4 },
@@ -444,7 +444,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
             }),
           ).pipe(Effect.andThen(save(id, { posted: true })))
         : Effect.void
-    // alongside it, glance's threads whose problem is gone are resolved; a file that wasn't read proves nothing
+    // alongside it, mekiki's threads whose problem is gone are resolved; a file that wasn't read proves nothing
     const reviewed = new Set(selected.map((f) => f.path).filter((path) => !unreviewed.includes(path)))
     const resolving = posting && resolveFixed ? timed("resolve", resolve(ref, pr.head.sha, { reviewed, findings: found })) : Effect.void
     yield* Effect.all([post, resolving], { concurrency: "unbounded", discard: true })
@@ -531,7 +531,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
     const created = yield* record(ref, options, settings)
     const review = yield* save(created.id, {
       status: "skipped",
-      summary: `glance is busy (${queued} reviews running or waiting): try again in a few minutes`,
+      summary: `mekiki is busy (${queued} reviews running or waiting): try again in a few minutes`,
       durationMs: 0,
     })
     yield* Effect.logWarning(`turned away ${prKey(ref)}: ${queued} reviews running or waiting (MAX_QUEUED_REVIEWS)`)
@@ -558,7 +558,7 @@ export const make = Effect.fn("Reviewer.make")(function* (limits: Limits, { reso
     const again = (yield* Clock.currentTimeMillis) - review.startedAt < RESUME_WITHIN_MS && !review.trigger.startsWith("resumed")
     const ended = yield* save(review.id, {
       status: again ? "cancelled" : "failed",
-      error: again ? "glance restarted mid-review: reviewing again" : "glance restarted mid-review",
+      error: again ? "mekiki restarted mid-review: reviewing again" : "mekiki restarted mid-review",
       durationMs: (yield* Clock.currentTimeMillis) - review.startedAt,
     })
     if (again)

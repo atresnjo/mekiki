@@ -14,7 +14,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "paths": {
-      "@glance/api": ["../src/rpc.ts"]
+      "@mekiki/api": ["../src/rpc.ts"]
     }
   },
   "include": ["src"]

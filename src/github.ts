@@ -34,11 +34,11 @@ export interface ReviewThread {
   readonly path: string
   /** the line it's on, or (outdated) the line it was left on */
   readonly line: number | null
-  /** whether github lets glance resolve it: an app needs write access to the repository's contents */
+  /** whether github lets mekiki resolve it: an app needs write access to the repository's contents */
   readonly canResolve: boolean
   /**
-   * oldest first, the first one started the thread. `ours`: written by whoever glance is on github;
-   * `canCollapse`: glance may hide it as outdated, which it can do to its own with less access than resolving takes
+   * oldest first, the first one started the thread. `ours`: written by whoever mekiki is on github;
+   * `canCollapse`: mekiki may hide it as outdated, which it can do to its own with less access than resolving takes
    */
   readonly comments: ReadonlyArray<{
     readonly id: string
@@ -77,11 +77,11 @@ export interface Interface {
   readonly resolveThread: (pr: PrRef, threadId: string, reply: string) => Effect.Effect<void, GitHubError>
   /** reply in a review thread and hide the comment that started it as outdated: for when resolving isn't allowed */
   readonly collapseThread: (pr: PrRef, threadId: string, commentId: string, reply: string) => Effect.Effect<void, GitHubError>
-  /** the repositories glance can review, as owner/repo: the app's installations', else the token's. kept five minutes */
+  /** the repositories mekiki can review, as owner/repo: the app's installations', else the token's. kept five minutes */
   readonly repositories: Effect.Effect<ReadonlyArray<string>, GitHubError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/GitHub") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/GitHub") {}
 
 export interface Options {
   readonly apiUrl: string
@@ -150,8 +150,8 @@ const ThreadPage = Schema.Struct({
 const decodeThreadPage = Schema.decodeUnknownEffect(GraphQL(ThreadPage))
 const decodeMutation = Schema.decodeUnknownEffect(GraphQL(Schema.Unknown))
 
-// the first fifty comments: the one that started the thread, and whether glance already said it's fixed. and
-// what glance may do about it: resolve it, or hide its comment
+// the first fifty comments: the one that started the thread, and whether mekiki already said it's fixed. and
+// what mekiki may do about it: resolve it, or hide its comment
 const THREADS = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
@@ -206,7 +206,7 @@ const ghToken = Effect.gen(function* () {
 export const make = Effect.fn("GitHub.make")(function* (options: Options) {
   const fs = yield* FileSystem.FileSystem
   const http = yield* HttpClient.HttpClient
-  const headers = HttpClientRequest.setHeaders({ "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "glance" })
+  const headers = HttpClientRequest.setHeaders({ "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mekiki" })
   const base = http.pipe(HttpClient.mapRequest(flow(HttpClientRequest.prependUrl(options.apiUrl), headers)))
   // reads are idempotent: retry what failed for a moment. writes are never retried
   const reader = base.pipe(HttpClient.retryTransient({ schedule: Schedule.exponential("200 millis"), times: 2 }))
@@ -235,7 +235,7 @@ export const make = Effect.fn("GitHub.make")(function* (options: Options) {
       Effect.mapError((e) => new GitHubError({ operation, message: e.message })),
     )
 
-  // ---------- who glance is on github: an app's installation on each repository, else one token ----------
+  // ---------- who mekiki is on github: an app's installation on each repository, else one token ----------
 
   const appId = options.app.id
   const privateKey = Option.isSome(options.app.privateKey)

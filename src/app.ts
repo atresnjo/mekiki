@@ -15,7 +15,7 @@ export const layer = (config: AppConfig) => {
     GitHub.layer(config.github),
     Agent.layer(config.agent),
     // the database stays exposed too: signing in (auth.ts) starts once it has been migrated
-    Store.layer({ defaults: config.defaults }).pipe(Layer.provideMerge(Database.layer({ url: config.databaseUrl }))),
+    Store.layer({ defaults: config.defaults, clis: config.agent.clis }).pipe(Layer.provideMerge(Database.layer({ url: config.databaseUrl }))),
   )
   // the http routes use the store, the agents and the panel too, so they stay exposed
   return Reviewer.layer(config.limits, { resolveFixed: config.github.resolveFixed }).pipe(

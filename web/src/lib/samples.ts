@@ -1,6 +1,6 @@
 // stand-ins the pages render from while the feed connects: skullet lays them out unseen and draws the
 // skeleton from them, so it takes the space the real page will. their text is never shown, only measured
-import type { Finding, Review } from "./glance.ts"
+import type { Finding, Review } from "./mekiki.ts"
 
 const HOUR = 3_600_000
 const now = Date.now()

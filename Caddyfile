@@ -1,5 +1,7 @@
-# the dashboard and the api on one origin, with https from let's encrypt for GLANCE_DOMAIN
-{$GLANCE_DOMAIN:localhost} {
+# the dashboard and the api on one origin: the built dashboard from /srv, /api/ forwarded to the api at
+# MEKIKI_API_URL. MEKIKI_DOMAIN gets an https certificate from let's encrypt; ":80" serves plain http, for a
+# host whose own proxy does https
+{$MEKIKI_DOMAIN:localhost} {
 	encode zstd gzip
 
 	header {
@@ -15,7 +17,7 @@
 	# the rpc api, signing in (/api/auth), health and the github webhook. the review stream is one long
 	# response: passed on as it's written, not buffered
 	handle /api/* {
-		reverse_proxy glance:7420 {
+		reverse_proxy {$MEKIKI_API_URL:http://mekiki:7420} {
 			flush_interval -1
 		}
 	}

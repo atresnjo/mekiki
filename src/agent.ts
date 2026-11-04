@@ -1,6 +1,6 @@
 // the reviewers: `claude -p` and `codex exec`, each running on its own subscription login, and
 // `api`: a model on an API key (openai, anthropic, google or an openai-compatible gateway) through
-// the AI SDK, reading the checkout with glance's own read-only tools (sandbox.ts).
+// the AI SDK, reading the checkout with mekiki's own read-only tools (sandbox.ts).
 // a cli call is one short-lived process with no MCP servers, no project context and our own short
 // system prompt; an api call is one generateText loop. either way: a single structured answer
 import { createAnthropic } from "@ai-sdk/anthropic"
@@ -43,6 +43,8 @@ export interface Answer {
 }
 
 export interface Interface {
+  /** the agents this mekiki reviews with: only the api agent when the clis are off */
+  readonly offered: ReadonlyArray<AgentKind>
   readonly review: (request: Request) => Effect.Effect<Answer, AgentError>
   /** the CLI's version (the api agent: its provider and model), or why it can't run */
   readonly check: (agent: AgentKind) => Effect.Effect<string, AgentError>
@@ -77,7 +79,7 @@ const CodexCatalog = Schema.Struct({
 })
 const decodeCodexCatalog = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexCatalog))
 
-export class Service extends Context.Service<Service, Interface>()("glance/Agent") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Agent") {}
 
 export const PROVIDERS = ["openai", "anthropic", "google"] as const
 export type Provider = (typeof PROVIDERS)[number]
@@ -100,6 +102,8 @@ export interface ApiOptions {
 }
 
 export interface Options {
+  /** the claude and codex clis are offered (the default): off, only the api agent is */
+  readonly clis?: boolean | undefined
   readonly claudeBin: string
   readonly codexBin: string
   readonly timeout: number
@@ -109,8 +113,8 @@ export interface Options {
 }
 
 /**
- * what a child process (an agent cli, git, tar) is given of glance's environment: an allowlist, so
- * nothing glance holds (the database url, github's credentials, better auth's secret) reaches a
+ * what a child process (an agent cli, git, tar) is given of mekiki's environment: an allowlist, so
+ * nothing mekiki holds (the database url, github's credentials, better auth's secret) reaches a
  * process that reads untrusted code. API keys aren't on it either: a key beats the subscription
  * login in both CLIs, and reviews always bill the subscription
  */
@@ -135,7 +139,7 @@ const pick = (from: Record<string, string | undefined>, keep: (key: string) => b
   return env
 }
 
-/** what any child process gets: the allowed part of `from` (glance's own environment by default), with `extra` on top */
+/** what any child process gets: the allowed part of `from` (mekiki's own environment by default), with `extra` on top */
 export const childEnv = (extra: Record<string, string> = {}, from: Record<string, string | undefined> = process.env): Record<string, string> => ({
   ...pick(from, (key) => allowed.has(key) || key.startsWith("LC_")),
   ...extra,
@@ -282,6 +286,9 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
   const prices = options.prices ?? PRICES
 
   const fail = (agent: AgentKind) => (message: string) => new AgentError({ agent, message })
+  const offered: ReadonlyArray<AgentKind> = options.clis === false ? ["api"] : ["claude", "codex", "api"]
+  /** a cli asked for while they're off: nothing is started */
+  const off = (agent: AgentKind) => fail(agent)(`the ${agent} cli is off here (MEKIKI_CLI_AGENTS=false): review with the api agent`)
 
   /** a cli call that runs too long is stopped (its process with it) */
   const deadline = <A, R>(agent: AgentKind, effect: Effect.Effect<A, AgentError, R>) =>
@@ -308,7 +315,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
   })
 
   const inTempDir = <A, E, R>(agent: AgentKind, f: (dir: string) => Effect.Effect<A, E, R>) =>
-    fs.makeTempDirectoryScoped({ prefix: "glance-" }).pipe(
+    fs.makeTempDirectoryScoped({ prefix: "mekiki-" }).pipe(
       Effect.mapError((e) => new AgentError({ agent, message: `couldn't make a work directory: ${e.message}` })),
       Effect.flatMap(f),
       Effect.scoped,
@@ -422,8 +429,8 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
   /** why the api agent can't run, if it can't: a provider, a model and that provider's key */
   const apiProblem = (model: string) =>
     Option.match(options.api.provider, {
-      onNone: () => "the api agent isn't set up: set GLANCE_API_PROVIDER",
-      onSome: (provider) => (!model ? "set GLANCE_API_MODEL" : Option.isNone(options.api.key) ? `set ${KEY_VAR[provider]}` : undefined),
+      onNone: () => "the api agent isn't set up: set MEKIKI_API_PROVIDER",
+      onSome: (provider) => (!model ? "set MEKIKI_API_MODEL" : Option.isNone(options.api.key) ? `set ${KEY_VAR[provider]}` : undefined),
     })
 
   /** an error's own words, without the key in them should a provider ever echo it */
@@ -499,6 +506,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
   const review = Effect.fn("Agent.review")(function* (request: Request): Effect.fn.Return<Answer, AgentError> {
     yield* Effect.annotateCurrentSpan({ agent: request.agent, model: request.model })
     if (request.agent === "api") return yield* api(request)
+    if (!offered.includes(request.agent)) return yield* off(request.agent)
     return yield* deadline(request.agent, request.agent === "claude" ? claude(request) : codex(request))
   })
 
@@ -510,6 +518,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
       if (problem) return yield* fail("api")(problem)
       return `${Option.getOrElse(options.api.provider, () => "openai")} ${options.api.model}`
     }
+    if (!offered.includes(agent)) return yield* off(agent)
     const bin = agent === "claude" ? options.claudeBin : options.codexBin
     const [version, status] = yield* Effect.all(
       [
@@ -530,6 +539,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
   })
 
   const models = Effect.fn("Agent.models")(function* (agent: AgentKind) {
+    if (!offered.includes(agent)) return yield* off(agent)
     if (agent === "claude") return CLAUDE_MODELS
     if (agent === "api") {
       const extra = options.api.models.filter((m) => m !== options.api.model).map((id) => ({ id, label: id }))
@@ -544,7 +554,7 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
     return [{ id: "", label: "Default" }, ...listed]
   })
 
-  return Service.of({ review, check, models })
+  return Service.of({ offered, review, check, models })
 })
 
 export const layer = (options: Options, connectModel?: (model: string) => LanguageModel) => Layer.effect(Service, make(options, connectModel))

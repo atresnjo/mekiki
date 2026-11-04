@@ -16,23 +16,23 @@ const docker = (...args: Array<string>) => {
   return result.stdout.toString().trim()
 }
 
-const name = `glance-effect-e2e-${crypto.randomUUID().slice(0, 8)}`
-docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=glance", "-p", "127.0.0.1::5432", "postgres:18-alpine")
+const name = `mekiki-effect-e2e-${crypto.randomUUID().slice(0, 8)}`
+docker("run", "--rm", "-d", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=mekiki", "-p", "127.0.0.1::5432", "postgres:18-alpine")
 try {
   // pg_isready is the readiness condition; a bounded retry only paces that check.
   for (let attempt = 0; ; attempt++) {
-    if (Bun.spawnSync(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "glance"]).exitCode === 0) break
+    if (Bun.spawnSync(["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "mekiki"]).exitCode === 0) break
     if (attempt >= 100) throw new Error(`temporary postgres did not become ready: ${docker("logs", name)}`)
     await Bun.sleep(100)
   }
   const port = Number(docker("port", name, "5432/tcp").split(":").at(-1))
   const secret = "an-e2e-secret-that-is-long-enough-for-better-auth"
   const config = configFrom({
-    DATABASE_URL: `postgres://postgres@127.0.0.1:${port}/glance`,
+    DATABASE_URL: `postgres://postgres@127.0.0.1:${port}/mekiki`,
     BETTER_AUTH_SECRET: secret,
     GITHUB_CLIENT_ID: "fixture-client",
     GITHUB_CLIENT_SECRET: "fixture-secret",
-    GLANCE_ALLOWED_EMAILS: "@example.com",
+    MEKIKI_ALLOWED_EMAILS: "@example.com",
   })
   const database = Database.layer({ url: config.databaseUrl })
   const services = Layer.mergeAll(Store.layer({ defaults: config.defaults }), Auth.layer(config)).pipe(Layer.provideMerge(database))
@@ -59,7 +59,7 @@ try {
       yield* db.insert(authAccounts).values({ id: crypto.randomUUID(), accountId: id, providerId: "github", userId: id })
       yield* db.insert(authSessions).values({ id: crypto.randomUUID(), token, userId: id, expiresAt: new Date(Date.now() + 60_000) })
       const signature = createHmac("sha256", secret).update(token).digest("base64")
-      const headers = new Headers({ cookie: `glance.session_token=${encodeURIComponent(`${token}.${signature}`)}` })
+      const headers = new Headers({ cookie: `mekiki.session_token=${encodeURIComponent(`${token}.${signature}`)}` })
       const auth = yield* Auth.Service
       const user = yield* auth.user(headers)
       if (Option.isNone(user) || user.value.email !== "e2e@example.com") throw new Error("live session was not authorized")

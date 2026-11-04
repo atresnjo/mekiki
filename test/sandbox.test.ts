@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { Sandbox } from "../src/sandbox.ts"
 
-const root = mkdtempSync(join(tmpdir(), "glance-sandbox-"))
+const root = mkdtempSync(join(tmpdir(), "mekiki-sandbox-"))
 const code = join(root, "checkout")
 mkdirSync(join(code, "src", "deep"), { recursive: true })
 writeFileSync(join(root, "secret.txt"), "OUTSIDE-SECRET\n")

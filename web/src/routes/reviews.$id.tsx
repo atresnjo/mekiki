@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router"
 import { Skeleton } from "skullet/react"
 import { ReviewPage } from "../components/detail.tsx"
 import { useNow } from "../components/ui.tsx"
-import { useReviews } from "../lib/glance.ts"
+import { useReviews } from "../lib/mekiki.ts"
 import { SAMPLE_REVIEW } from "../lib/samples.ts"
 
 export const Route = createFileRoute("/reviews/$id")({ component: Review })

@@ -7,7 +7,7 @@ import { resolve, join } from "node:path"
 
 const artifacts = resolve(".data/e2e")
 await Bun.$`mkdir -p ${artifacts}`.quiet()
-const credentials = await mkdtemp(join(tmpdir(), "glance-e2e-"))
+const credentials = await mkdtemp(join(tmpdir(), "mekiki-e2e-"))
 await Bun.write(join(credentials, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fixture-oauth" } }))
 await Bun.write(join(credentials, "mode"), "ok")
 const env = {
@@ -27,7 +27,7 @@ const api = Bun.spawn(["bun", "test/e2e/server.ts"], {
   stderr: Bun.file(join(artifacts, "server-errors.log")),
 })
 const web = Bun.spawn(["bun", "run", "dev:web", "--port", "7521", "--strictPort", "--host", "127.0.0.1"], {
-  env: { ...process.env, GLANCE_API_URL: "http://127.0.0.1:7520" },
+  env: { ...process.env, MEKIKI_API_URL: "http://127.0.0.1:7520" },
   stdout: Bun.file(join(artifacts, "web.log")),
   stderr: Bun.file(join(artifacts, "web-errors.log")),
 })
@@ -73,7 +73,7 @@ try {
   await expect(page.getByRole("heading", { name: "Subscription usage" })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Subscription usage" })).toHaveCount(0)
   record("signed-out dashboard asks to sign in and shows no usage")
-  await page.context().addCookies([{ name: "glance-e2e", value: "signed-in", url: "http://127.0.0.1:7521" }])
+  await page.context().addCookies([{ name: "mekiki-e2e", value: "signed-in", url: "http://127.0.0.1:7521" }])
   await page.reload()
   // the header: one line of health (codex isn't logged in on the fixture), and the closest limit
   const health = page.getByRole("button", { name: /^Status: Codex logged out/ })
@@ -82,7 +82,7 @@ try {
   await expect(health).not.toHaveAccessibleName(/API key/)
   await health.click()
   await expect(page.getByText("Not set up")).toBeVisible()
-  await expect(page.getByText("GLANCE_API_PROVIDER")).toBeVisible()
+  await expect(page.getByText("MEKIKI_API_PROVIDER")).toBeVisible()
   await page.keyboard.press("Escape")
   const usageButton = page.getByRole("button", { name: "Subscription usage", exact: true })
   await expect(usageButton).toHaveText("100%")
@@ -155,8 +155,8 @@ try {
       issue: { number: 7, pull_request: {} },
       comment: {
         id,
-        body: command ? "/glance high" : "<!-- glance:panel -->\n- [x] High <!-- glance:high -->",
-        user: command ? { login: by, type: "User" } : { login: "glance[bot]", type: "Bot" },
+        body: command ? "/mekiki high" : "<!-- mekiki:panel -->\n- [x] High <!-- mekiki:high -->",
+        user: command ? { login: by, type: "User" } : { login: "mekiki[bot]", type: "Bot" },
       },
       repository: { name: "api", owner: { login: "acme" } },
       sender: { login: by, type: "User" },
@@ -217,7 +217,7 @@ try {
   await sections.getByRole("button", { name: "Team rules" }).click()
   await page.getByRole("textbox", { name: "Team rules" }).fill("We use Effect: never throw.")
   await sections.getByRole("button", { name: "Repositories" }).click()
-  // a repository glance has reviewed is suggested
+  // a repository mekiki has reviewed is suggested
   await page.getByLabel("Add a repository").fill("acme")
   await page.getByRole("option", { name: "acme/api" }).click()
   await page.getByRole("button", { name: "Add", exact: true }).click()

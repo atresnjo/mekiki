@@ -19,12 +19,12 @@ import { GitHub } from "../src/github.ts"
 import { Panel } from "../src/panel.ts"
 import { Reviewer } from "../src/reviewer.ts"
 import { AuthenticatedLive, HandlersLive } from "../src/rpc-server.ts"
-import { GlanceRpcs } from "../src/rpc.ts"
+import { MekikiRpcs } from "../src/rpc.ts"
 import { Store } from "../src/store.ts"
 import { configFrom, fakeAuth, fakeHealth, fakeUsage, memoryDatabase } from "./support.ts"
 
 test("Effect end-to-end rehearsal: real HTTP, agent processes, checkout, persistence and RPC", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "glance-effect-e2e-"))
+  const dir = mkdtempSync(join(tmpdir(), "mekiki-effect-e2e-"))
   const fixture = join(dir, "agent")
   let notifyReady: (pid: number) => void = () => {}
   const agentReady = new Promise<number>((resolve) => {
@@ -87,7 +87,7 @@ console.log(JSON.stringify({ structured_output: { summary: "Read the actual code
     GITHUB_API_URL: server.url.href.replace(/\/$/, ""),
     GITHUB_TOKEN: "fixture-token",
     CLAUDE_BIN: fixture,
-    GLANCE_CHECKOUTS: join(dir, "checkouts"),
+    MEKIKI_CHECKOUTS: join(dir, "checkouts"),
     CHUNK_CHARS: "1",
     AGENT_TIMEOUT_SECONDS: "10",
   })
@@ -136,7 +136,7 @@ console.log(JSON.stringify({ structured_output: { summary: "Read the actual code
         expect(failure._tag).toBe("Failure")
         const typed = failure._tag === "Failure" ? Cause.findErrorOption(failure.cause) : Option.none()
         expect(Option.isSome(typed) && Schema.is(Schema.Struct({ _tag: Schema.Literal("StoreError") }))(typed.value)).toBe(true)
-        const client = yield* RpcTest.makeClient(GlanceRpcs).pipe(
+        const client = yield* RpcTest.makeClient(MekikiRpcs).pipe(
           Effect.provide(Layer.mergeAll(HandlersLive(config), AuthenticatedLive).pipe(Layer.provide(Layer.mergeAll(fakeAuth(false), fakeHealth, fakeUsage)))),
         )
         const rpcFailure = yield* client.ListReviews({ before: 100 }).pipe(Effect.flip)

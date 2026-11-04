@@ -104,7 +104,7 @@ test("a partial review isn't where the next one starts from; one saved before pa
     Effect.gen(function* () {
       const whole = yield* store.create(review({ headSha: "a1" }))
       yield* store.create(review({ headSha: "b2", unreviewed: ["src/a.ts"] }))
-      // written by an older glance: no unreviewed key at all
+      // written by an older mekiki: no unreviewed key at all
       const { unreviewed: _, ...before } = review({ headSha: "c3", repo: "o/old" })
       const legacy = yield* store.create(before as never)
       return [Option.map(yield* store.lastDone("o/r", 1), (r) => r.id === whole.id), yield* store.get(legacy.id)]
@@ -143,16 +143,16 @@ test("past MAX_QUEUED_REVIEWS a review is turned away, and says so; replacing a 
     [2, "skipped"],
     [1, "cancelled"],
   ])
-  expect(rows[1]?.summary).toContain("glance is busy")
+  expect(rows[1]?.summary).toContain("mekiki is busy")
   expect(shown.some((s) => s.pr.number === 2 && s.kind === "finished")).toBe(true)
 })
 
 test("settings saved before rules and author lists existed still read, the new fields from the environment", async () => {
-  const env = configFrom({ GLANCE_BLOCKED_AUTHORS: "dependabot[bot]", GLANCE_EXCLUDE: "*.snap" })
+  const env = configFrom({ MEKIKI_BLOCKED_AUTHORS: "dependabot[bot]", MEKIKI_EXCLUDE: "*.snap" })
   const settings = await Effect.runPromise(
     Effect.gen(function* () {
       const db = yield* Database.Service
-      // written by an older glance
+      // written by an older mekiki
       yield* db.insert(settingsTable).values({
         id: 1,
         data: { agent: "codex", model: "", depth: "high", mode: "auto", postComments: false, maxFindings: 5, minConfidence: 0.7 } as never,
@@ -195,7 +195,7 @@ test("a repository's settings go on top of the global ones, under any case, unti
   expect(result.after).toEqual(result.other)
 })
 
-test("the repositories glance has reviewed, once each", async () => {
+test("the repositories mekiki has reviewed, once each", async () => {
   const repos = await withStore((store) =>
     Effect.gen(function* () {
       for (const repo of ["acme/web", "acme/api", "acme/web"]) yield* store.create(review({ repo }))

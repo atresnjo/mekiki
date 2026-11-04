@@ -1,12 +1,12 @@
-// glance's comment on a pull request: what it's doing, and Light / Medium / High checkboxes.
+// mekiki's comment on a pull request: what it's doing, and Light / Medium / High checkboxes.
 // ticking one edits the comment, github sends `issue_comment.edited`, and the review starts.
-// glance only ever writes the boxes unticked, so a ticked box is always a person asking
+// mekiki only ever writes the boxes unticked, so a ticked box is always a person asking
 import { Context, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import { type Depth, Depth as DepthSchema, partial, type PrRef, type Review } from "./domain.ts"
 import { GitHub } from "./github.ts"
 import { Store } from "./store.ts"
 
-export const MARKER = "<!-- glance:panel -->"
+export const MARKER = "<!-- mekiki:panel -->"
 
 export type State =
   /** nothing reviewed yet */
@@ -53,13 +53,13 @@ const status = (state: State): readonly [string, string] => {
 
 export const render = (state: State): string => {
   const [line, prompt] = status(state)
-  const boxes = DEPTHS.map(([depth, name, hint]) => `- [ ] **${name}**: ${hint} <!-- glance:${depth} -->`).join("\n")
-  return `${MARKER}\n### ⚡ glance\n\n${line}\n\n${prompt}\n\n${boxes}`
+  const boxes = DEPTHS.map(([depth, name, hint]) => `- [ ] **${name}**: ${hint} <!-- mekiki:${depth} -->`).join("\n")
+  return `${MARKER}\n### ⚡ mekiki\n\n${line}\n\n${prompt}\n\n${boxes}`
 }
 
 const ticked = (body: string): Set<Depth> =>
   new Set(
-    [...body.matchAll(/^\s*[-*] \[[xX]\].*<!-- glance:(light|medium|high) -->/gm)].flatMap((match) =>
+    [...body.matchAll(/^\s*[-*] \[[xX]\].*<!-- mekiki:(light|medium|high) -->/gm)].flatMap((match) =>
       Option.toArray(Schema.decodeUnknownOption(DepthSchema)(match[1])),
     ),
   )
@@ -77,7 +77,7 @@ export interface Interface {
   readonly show: (pr: PrRef, state: State) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Panel") {}
+export class Service extends Context.Service<Service, Interface>()("mekiki/Panel") {}
 
 export const make = Effect.gen(function* () {
   const github = yield* GitHub.Service
@@ -107,7 +107,7 @@ export const make = Effect.gen(function* () {
     (effect, pr) =>
       effect.pipe(
         Semaphore.withPermit(lock),
-        Effect.catch((e) => Effect.logWarning(`couldn't update the glance comment on ${pr.owner}/${pr.repo}#${pr.number}: ${e.message}`)),
+        Effect.catch((e) => Effect.logWarning(`couldn't update the mekiki comment on ${pr.owner}/${pr.repo}#${pr.number}: ${e.message}`)),
       ),
   )
 

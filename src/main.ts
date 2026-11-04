@@ -1,4 +1,4 @@
-// glance server: the rpc api, signing in (better auth), health and the github webhook. the dashboard is its own app (web/)
+// mekiki server: the rpc api, signing in (better auth), health and the github webhook. the dashboard is its own app (web/)
 import { BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
@@ -26,7 +26,7 @@ const Main = Layer.unwrap(
       // the review stream's heartbeat keeps its connection busier than this
       // the largest request anything here takes is a webhook delivery (github's own cap is 25 MB)
       Layer.provide(BunHttpServer.layer({ port: config.port, hostname: config.host, idleTimeout: 60, maxRequestBodySize: 32 * 1024 * 1024 })),
-      Layer.tap(() => Effect.log(`glance api on http://${config.host}:${config.port}`)),
+      Layer.tap(() => Effect.log(`mekiki api on http://${config.host}:${config.port}`)),
       Layer.provide(Observability.layer(config.observability)),
     )
   }),

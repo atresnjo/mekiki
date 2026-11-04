@@ -1,4 +1,4 @@
-// is glance able to review? the database answers and at least one agent is ready: a cli installed
+// is mekiki able to review? the database answers and at least one agent is ready: a cli installed
 // and logged in, or the api agent with its key. /api/health says so (docker's healthcheck and uptime
 // monitors read it), and a monitor logs an error the moment an agent stops working: a cli login
 // expires quietly otherwise
@@ -23,9 +23,7 @@ export interface Interface {
   readonly report: Effect.Effect<Report>
 }
 
-export class Service extends Context.Service<Service, Interface>()("glance/Health") {}
-
-const KINDS: ReadonlyArray<AgentKind> = ["claude", "codex", "api"]
+export class Service extends Context.Service<Service, Interface>()("mekiki/Health") {}
 
 /** what's wrong, in the log */
 const DOWN: Record<AgentKind, string> = {
@@ -37,6 +35,7 @@ const DOWN: Record<AgentKind, string> = {
 export const make = Effect.gen(function* () {
   const agent = yield* Agent.Service
   const store = yield* Store.Service
+  const KINDS = agent.offered
 
   const lookUp = Effect.all(
     {
@@ -84,7 +83,7 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(Service, make)
 
-/** GET /api/health: 200 when glance can review, 503 and what's wrong otherwise */
+/** GET /api/health: 200 when mekiki can review, 503 and what's wrong otherwise */
 export const routes = Layer.unwrap(
   Effect.gen(function* () {
     const health = yield* Service

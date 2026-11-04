@@ -11,7 +11,7 @@ import { ArrowDown01Icon, ArrowReloadHorizontalIcon, CheckmarkCircle02Icon, Link
 import { Icon } from "./icon.tsx"
 import { useAtomSet } from "@effect/atom-react"
 import type { ReactNode } from "react"
-import { cancelReview, type Finding, type Review, retryReview } from "../lib/glance.ts"
+import { cancelReview, type Finding, type Review, retryReview } from "../lib/mekiki.ts"
 import { agentName, ago, DEPTHS, depthLabel, dollars, elapsed, report, seconds, SEVERITY, StatusBadge, tokenCount } from "./ui.tsx"
 
 const Column = ({ label, children }: { label: string; children: ReactNode }) => (
@@ -105,7 +105,7 @@ export const ReviewPage = ({ review, now }: { review: Review | undefined; now: n
           <Breadcrumbs.Current>Not found</Breadcrumbs.Current>
         </Breadcrumbs>
         <LayerCard className="py-12">
-          <Empty title="No such review" description="It may have been made by another glance, or the link is wrong." />
+          <Empty title="No such review" description="It may have been made by another mekiki, or the link is wrong." />
         </LayerCard>
       </div>
     )

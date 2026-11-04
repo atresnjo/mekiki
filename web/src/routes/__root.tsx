@@ -3,7 +3,7 @@ import { Banner } from "@cloudflare/kumo/components/banner"
 import { createRootRoute, Outlet } from "@tanstack/react-router"
 import { Header, SignIn, StartForm } from "../components/shell.tsx"
 import { report } from "../components/ui.tsx"
-import { type Depth, feedAtom, saveSettings, settingsAtom, statusAtom, useValue } from "../lib/glance.ts"
+import { type Depth, feedAtom, saveSettings, settingsAtom, statusAtom, useValue } from "../lib/mekiki.ts"
 
 export const Route = createRootRoute({ component: Root })
 
@@ -31,7 +31,7 @@ function Root() {
             <Banner
               variant="alert"
               title="No agent CLI found"
-              description="Install and log in to Claude Code (claude) or Codex (codex) on this machine: glance runs reviews through them on your subscription."
+              description="Install and log in to Claude Code (claude) or Codex (codex) on this machine: mekiki runs reviews through them on your subscription."
             />
           )}
           {/* each page draws its own skeleton until the feed connects */}

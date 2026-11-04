@@ -1,5 +1,5 @@
 // the numbers behind the overview cards: a time window, bucketed, against the window before it
-import type { Review } from "./glance.ts"
+import type { Review } from "./mekiki.ts"
 
 export type Range = "24h" | "7d" | "30d"
 

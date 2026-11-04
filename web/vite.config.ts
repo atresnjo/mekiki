@@ -4,16 +4,19 @@ import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
 
 // in development the api is proxied, so the dashboard and the api share an origin
-const api = process.env.GLANCE_API_URL ?? "http://127.0.0.1:7420"
+const api = process.env.MEKIKI_API_URL ?? "http://127.0.0.1:7420"
 // one prefix: the rpc (/api/rpc) and the webhook. it ends in "/" so a page named /api… stays the app's
 const proxy = { "/api/": api }
-// `bun run tunnel`'s address: vite turns away hosts it doesn't know. vite runs on node, which doesn't
-// read the repository's .env the way bun does, so it's read here
-const tunnel = process.env.GLANCE_TUNNEL_HOSTNAME || loadEnv("development", `${import.meta.dirname}/..`, "GLANCE_TUNNEL_").GLANCE_TUNNEL_HOSTNAME
-const allowedHosts = tunnel ? [tunnel] : []
+// hosts besides localhost that reach the dashboard (a tunnel to this machine): vite turns away the ones
+// it doesn't know. vite runs on node, which doesn't read the repository's .env the way bun does, so it's read here
+const hosts = process.env.MEKIKI_DEV_HOSTS ?? loadEnv("development", `${import.meta.dirname}/..`, "MEKIKI_DEV_").MEKIKI_DEV_HOSTS ?? ""
+const allowedHosts = hosts
+  .split(",")
+  .map((host) => host.trim())
+  .filter(Boolean)
 
 export default defineConfig({
-  // @glance/api is the contract in ../src/rpc.ts (tsconfig paths)
+  // @mekiki/api is the contract in ../src/rpc.ts (tsconfig paths)
   resolve: { tsconfigPaths: true },
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
   server: { port: 7421, proxy, allowedHosts },

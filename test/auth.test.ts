@@ -14,27 +14,27 @@ import { configFrom } from "./support.ts"
 const SECRET = "a-test-secret-that-is-long-enough-to-sign"
 const GITHUB = { GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret" }
 const PRODUCTION = {
-  GLANCE_ENV: "production",
-  BETTER_AUTH_URL: "https://glance.acme.com",
+  MEKIKI_ENV: "production",
+  BETTER_AUTH_URL: "https://mekiki.acme.com",
   BETTER_AUTH_SECRET: SECRET,
-  GLANCE_ALLOWED_EMAILS: "@acme.com",
+  MEKIKI_ALLOWED_EMAILS: "@acme.com",
   ...GITHUB,
 }
 
 test("production doesn't start until someone can sign in, safely", () => {
-  expect(problems(configFrom({ GLANCE_ENV: "production" }))).toEqual([expect.stringContaining("nobody could sign in")])
+  expect(problems(configFrom({ MEKIKI_ENV: "production" }))).toEqual([expect.stringContaining("nobody could sign in")])
   // listening beyond this machine counts as production
   expect(problems(configFrom({ HOST: "0.0.0.0" }))).toEqual([expect.stringContaining("nobody could sign in")])
   expect(problems(configFrom(PRODUCTION))).toEqual([])
   expect(problems(configFrom({ ...PRODUCTION, BETTER_AUTH_SECRET: "short" }))).toEqual([expect.stringContaining("BETTER_AUTH_SECRET")])
-  expect(problems(configFrom({ ...PRODUCTION, BETTER_AUTH_URL: "http://glance.acme.com" }))).toEqual([expect.stringContaining("https")])
-  expect(problems(configFrom({ ...PRODUCTION, GLANCE_ALLOWED_EMAILS: "" }))).toEqual([expect.stringContaining("nobody is allowed in")])
+  expect(problems(configFrom({ ...PRODUCTION, BETTER_AUTH_URL: "http://mekiki.acme.com" }))).toEqual([expect.stringContaining("https")])
+  expect(problems(configFrom({ ...PRODUCTION, MEKIKI_ALLOWED_EMAILS: "" }))).toEqual([expect.stringContaining("nobody is allowed in")])
   expect(problems(configFrom({ ...PRODUCTION, GITHUB_CLIENT_SECRET: "" }))).not.toEqual([])
   // sso: one kind, and the company's domain
-  expect(problems(configFrom({ ...PRODUCTION, GLANCE_SSO_ISSUER: "https://acme.okta.com" }))).toEqual([expect.stringContaining("GLANCE_SSO_CLIENT_ID")])
-  const oidc = { GLANCE_SSO_ISSUER: "https://acme.okta.com", GLANCE_SSO_CLIENT_ID: "c", GLANCE_SSO_CLIENT_SECRET: "s" }
-  expect(problems(configFrom({ ...PRODUCTION, ...oidc }))).toEqual([expect.stringContaining("GLANCE_SSO_DOMAIN")])
-  expect(problems(configFrom({ ...PRODUCTION, ...oidc, GLANCE_SSO_DOMAIN: "acme.com" }))).toEqual([])
+  expect(problems(configFrom({ ...PRODUCTION, MEKIKI_SSO_ISSUER: "https://acme.okta.com" }))).toEqual([expect.stringContaining("MEKIKI_SSO_CLIENT_ID")])
+  const oidc = { MEKIKI_SSO_ISSUER: "https://acme.okta.com", MEKIKI_SSO_CLIENT_ID: "c", MEKIKI_SSO_CLIENT_SECRET: "s" }
+  expect(problems(configFrom({ ...PRODUCTION, ...oidc }))).toEqual([expect.stringContaining("MEKIKI_SSO_DOMAIN")])
+  expect(problems(configFrom({ ...PRODUCTION, ...oidc, MEKIKI_SSO_DOMAIN: "acme.com" }))).toEqual([])
   // development on this machine may run without anyone signing in
   expect(problems(configFrom({}))).toEqual([])
 })
@@ -49,7 +49,7 @@ test("an address is listed by itself or by its domain", () => {
 })
 
 test("github's address must be verified; the company's sso vouches for its own", () => {
-  const { auth } = configFrom({ ...PRODUCTION, GLANCE_SSO_DOMAIN: "sso.acme.com" })
+  const { auth } = configFrom({ ...PRODUCTION, MEKIKI_SSO_DOMAIN: "sso.acme.com" })
   expect(allowedByEmail(auth, { email: "a@acme.com", emailVerified: true, providers: ["github"] })).toBe(true)
   expect(allowedByEmail(auth, { email: "a@acme.com", emailVerified: false, providers: ["github"] })).toBe(false)
   expect(allowedByEmail(auth, { email: "a@acme.com", emailVerified: false, providers: [SSO_ID] })).toBe(true)
@@ -78,10 +78,10 @@ const signedIn = async (db: ReturnType<typeof drizzle>, who: { email: string; em
   await db.insert(authAccounts).values({ id: crypto.randomUUID(), accountId: id, providerId: who.provider, userId: id })
   await db.insert(authSessions).values({ id: crypto.randomUUID(), token, userId: id, expiresAt: new Date(Date.now() + 60_000) })
   const signature = createHmac("sha256", SECRET).update(token).digest("base64")
-  return new Headers({ cookie: `glance.session_token=${encodeURIComponent(`${token}.${signature}`)}` })
+  return new Headers({ cookie: `mekiki.session_token=${encodeURIComponent(`${token}.${signature}`)}` })
 }
 
-const env = { BETTER_AUTH_SECRET: SECRET, GLANCE_ALLOWED_EMAILS: "@acme.com", ...GITHUB }
+const env = { BETTER_AUTH_SECRET: SECRET, MEKIKI_ALLOWED_EMAILS: "@acme.com", ...GITHUB }
 
 test("a session is let in only while its user is allowed in", async () => {
   const [member = Option.none(), stranger, unverified, nobody] = await withAuth(env, async (auth, db) =>
@@ -130,7 +130,7 @@ test("better auth answers under /api/auth, and offers github", async () => {
       auth.handler(
         new Request("http://localhost:7421/api/auth/sign-in/social", {
           method: "POST",
-          headers: { "content-type": "application/json", origin: "http://localhost:7421", "x-glance-client-ip": "1.2.3.4" },
+          headers: { "content-type": "application/json", origin: "http://localhost:7421", "x-mekiki-client-ip": "1.2.3.4" },
           body: JSON.stringify({ provider: "github", callbackURL: "/" }),
         }),
       ),
