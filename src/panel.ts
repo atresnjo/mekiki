@@ -8,8 +8,8 @@ import { Store } from "./store.ts"
 
 export const MARKER = "<!-- mekiki:panel -->"
 
-/** the heading on everything mekiki posts. the logo comes from the repository's main branch, github proxies it */
-export const HEADING = `### <img src="https://raw.githubusercontent.com/atresnjo/mekiki/main/docs/logo-mark.png" alt="" width="20" height="20" align="top"> mekiki`
+/** the heading on everything mekiki posts. the logo comes from the repository's default branch, github proxies it */
+export const HEADING = `### <img src="https://raw.githubusercontent.com/atresnjo/mekiki/HEAD/docs/logo-mark.png" alt="" width="20" height="20" align="top"> mekiki`
 
 export type State =
   /** nothing reviewed yet */

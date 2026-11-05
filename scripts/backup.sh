@@ -1,9 +1,9 @@
 #!/bin/sh
-# mekiki's database, dumped and sent off this machine. run it from the checkout, on a schedule:
+# mekiki's database, dumped and sent off this machine. run it from mekiki's directory (beside docker-compose.yml), on a schedule:
 #
 #   17 3 * * *  cd /srv/mekiki && scripts/backup.sh >> /var/log/mekiki-backup.log 2>&1
 #
-# where the dump goes off the machine, any of (set in the environment, or in backup.env beside this checkout):
+# where the dump goes off the machine, any of (set in the environment, or in backup.env in that directory):
 #   MEKIKI_BACKUP_RCLONE=remote:bucket/mekiki   rclone copies each dump there
 #   RESTIC_REPOSITORY=… RESTIC_PASSWORD=…       restic backs each dump up
 # MEKIKI_BACKUP_PING_URL (healthchecks.io, uptime kuma's push url…) is called after a good backup:

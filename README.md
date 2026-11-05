@@ -139,17 +139,24 @@ The GitHub token needs read access to contents, and write access to pull request
 
 ## Deploy
 
-mekiki is two images from one Dockerfile, deployed side by side:
+mekiki ships as two images, for amd64 and arm64:
 
-- `api` (`--target api`, about 110 MB): the server, bundled into one file, on Alpine with git. It reviews with the API agent only. Claude Code and Codex aren't in the image, and `MEKIKI_CLI_AGENTS=false` takes them out of the dashboard.
-- `web` (`--target web`): Caddy with the built dashboard. It forwards `/api/` to the api (`MEKIKI_API_URL`, default `http://mekiki:7420`), so both share one origin, and gets the TLS certificate for `MEKIKI_DOMAIN`.
+- `ghcr.io/atresnjo/mekiki-api` (about 110 MB): the server, bundled into one file, on Alpine with git. It reviews with the API agent only. Claude Code and Codex aren't in the image, and `MEKIKI_CLI_AGENTS=false` takes them out of the dashboard.
+- `ghcr.io/atresnjo/mekiki-web`: Caddy with the built dashboard. It forwards `/api/` to the api (`MEKIKI_API_URL`, default `http://mekiki:7420`), so both share one origin, and gets the TLS certificate for `MEKIKI_DOMAIN`.
 
-Docker Compose runs three containers: `mekiki` (the api), `postgres` and `web`. Only `web` is reachable from outside. On a host whose own proxy does HTTPS, run `web` with `MEKIKI_DOMAIN=:80` and point the proxy at it.
+Each release is tagged `0.2.0`, `0.2` and `latest`. Docker Compose runs three containers: `mekiki` (the api), `postgres` and `web`. Only `web` is reachable from outside. On a host whose own proxy does HTTPS, run `web` with `MEKIKI_DOMAIN=:80` and point the proxy at it.
+
+You don't need the source. Download the release's compose file and env template into a directory on the server:
 
 ```bash
-cp .env.example .env    # domain, passwords, sign-in, webhook secret, github app
-docker compose up -d --build
+mkdir mekiki && cd mekiki
+curl -fsSLO https://github.com/atresnjo/mekiki/releases/latest/download/docker-compose.yml
+curl -fsSL https://github.com/atresnjo/mekiki/releases/latest/download/env.example -o .env
+chmod 600 .env          # then fill it in: domain, passwords, sign-in, webhook secret, github app, api key
+docker compose up -d
 ```
+
+The compose file runs the release it came from. To pin a different one, set `MEKIKI_VERSION=0.2.0` in `.env`.
 
 1. Point `MEKIKI_DOMAIN` at the server and open ports 80 and 443.
 2. Set up the [API agent](#subscription-or-api-key): `MEKIKI_API_PROVIDER`, `MEKIKI_API_MODEL` and the provider's key.
@@ -157,6 +164,16 @@ docker compose up -d --build
 4. Set up sign-in with GitHub and/or SSO (OIDC or SAML), and say who's allowed in with `MEKIKI_ALLOWED_EMAILS`, `MEKIKI_ALLOWED_GITHUB_ORGS` or `MEKIKI_SSO_DOMAIN`. In production mekiki won't start without this.
 
 `/api/health` returns 200 once the database works and the API agent has its key. Point an uptime monitor at it. Run only one mekiki per database; a second one refuses to start.
+
+To upgrade, set `MEKIKI_VERSION` to the new release (see [releases](https://github.com/atresnjo/mekiki/releases)), then run `docker compose pull && docker compose up -d`. The database migrates when mekiki starts. Take a backup first.
+
+To run your own build, build the images from a checkout and point `MEKIKI_VERSION` at them:
+
+```bash
+docker build --target api -t ghcr.io/atresnjo/mekiki-api:dev .
+docker build --target web -t ghcr.io/atresnjo/mekiki-web:dev .
+MEKIKI_VERSION=dev docker compose up -d
+```
 
 [docs/operations.md](docs/operations.md) covers the GitHub App, every sign-in provider, backups, alerts, upgrades and rollback.
 
@@ -191,3 +208,13 @@ bun run test:e2e:browser    # the dashboard in Playwright; no model calls, nothi
 ```
 
 Tests run on an in-process Postgres (PGlite) and don't need a database. [docs/effect.md](docs/effect.md) explains the Effect conventions.
+
+### Releasing
+
+Push a version tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+CI runs the checks, then publishes both images for amd64 and arm64 (`0.2.0`, `0.2`, `latest`). It also creates a GitHub release with generated notes and attaches `docker-compose.yml` (pinned to `0.2.0`), `env.example` and the backup scripts. A pre-release tag (`v0.2.0-rc.1`) publishes only its own image tag and is marked as a pre-release. That's what staging runs (see [docs/operations.md](docs/operations.md#6-release-rehearsal-on-staging)).

@@ -4,10 +4,24 @@ What the README's deploy section leaves out: setting up signing in, the GitHub A
 
 ## 1. The machine
 
-- A VPS with Docker and the compose plugin. 2 CPUs and 4 GB of memory review comfortably at `AGENT_CONCURRENCY=4`; the `mekiki` container is limited to `MEKIKI_CPUS` / `MEKIKI_MEMORY` (default 2 and 4g), postgres to 1 CPU and 1 GB, caddy to 256 MB. Container logs rotate at 5 × 20 MB each.
+- A VPS with Docker and the compose plugin, amd64 or arm64. 2 CPUs and 4 GB of memory review comfortably at `AGENT_CONCURRENCY=4`; the `mekiki` container is limited to `MEKIKI_CPUS` / `MEKIKI_MEMORY` (default 2 and 4g), postgres to 1 CPU and 1 GB, caddy to 256 MB. Container logs rotate at 5 × 20 MB each.
 - Disk: the checkouts stay under `MEKIKI_DISK_BUDGET_MB` (default 20 GB), plus postgres, plus the local backups. Leave headroom.
 - Open ports 80 and 443 only. Point `MEKIKI_DOMAIN`'s DNS at the machine before the first start: Caddy gets the certificate on its own.
 - Run **one** mekiki per database. Who's reviewing what, the rate limits and the live feed live in the process's memory, so mekiki takes a postgres advisory lock at startup and a second instance refuses to start (`AlreadyRunning`).
+
+### The directory
+
+mekiki runs from a directory holding a release's `docker-compose.yml`, the `.env` beside it and the backup scripts. No source checkout is needed. The README's deploy section has the commands; with the scripts:
+
+```bash
+mkdir -p /srv/mekiki/scripts && cd /srv/mekiki
+release=https://github.com/atresnjo/mekiki/releases/latest/download
+curl -fsSLO $release/docker-compose.yml
+curl -fsSL $release/env.example -o .env && chmod 600 .env
+curl -fsSL $release/backup.sh -o scripts/backup.sh
+curl -fsSL $release/restore-check.sh -o scripts/restore-check.sh
+chmod +x scripts/*.sh
+```
 
 ## 2. Secrets
 
@@ -81,8 +95,11 @@ In `.env`, `MEKIKI_API_PROVIDER`, `MEKIKI_API_MODEL` and the provider's key (`AN
 
 Before the first production deploy, and before every release that touches signing in, the webhook, the reviewer or the api agent. Staging is a second VPS (or the same one under another domain and compose project) with its own GitHub App installed on a test repository, its own database and its own SSO application.
 
+What staging runs is a release candidate: tag it `v0.2.0-rc.1`, and CI publishes images tagged `0.2.0-rc.1` (never `latest`) and a pre-release on GitHub. Production only ever gets a tag whose candidate passed.
+
 ```bash
-docker compose up -d --build                          # the production images, exactly
+# in staging's .env: MEKIKI_VERSION=0.2.0-rc.1
+docker compose pull && docker compose up -d                  # the images production will get, exactly
 docker compose exec mekiki bun dist/isolation-check.js api  # a hostile pull request leaks nothing: "nothing leaked" (bills the key)
 ```
 
@@ -103,13 +120,13 @@ Then, on the test repository:
 - [ ] **Health:** take `MEKIKI_API_MODEL` out of `.env` and restart: `/api/health` answers 503 and the log says the api agent isn't set up. Put it back.
 - [ ] **Backups:** `scripts/backup.sh` then `scripts/restore-check.sh` (below).
 
-Write down the commit that passed; that's what production runs.
+When it passes, tag the same commit as the release (`git tag v0.2.0 <the rc's commit> && git push origin v0.2.0`): its images are built from the same source.
 
 ## 7. Backups
 
 mekiki's state is the postgres database (reviews, settings and each repository's, mekiki's comment ids, sessions). The checkouts are a cache, so the `mekiki-data` volume needs no backup.
 
-`scripts/backup.sh` dumps the database (`pg_dump -Fc`), checks the dump reads, copies it off the machine with rclone (`MEKIKI_BACKUP_RCLONE=remote:bucket/mekiki`) or restic (`RESTIC_REPOSITORY`, `RESTIC_PASSWORD`), keeps the newest 14 locally, and pings `MEKIKI_BACKUP_PING_URL` when it's done. It fails when there's nowhere off the machine to put the dump. Put the settings in `backup.env` beside the checkout and run it daily:
+`scripts/backup.sh` dumps the database (`pg_dump -Fc`), checks the dump reads, copies it off the machine with rclone (`MEKIKI_BACKUP_RCLONE=remote:bucket/mekiki`) or restic (`RESTIC_REPOSITORY`, `RESTIC_PASSWORD`), keeps the newest 14 locally, and pings `MEKIKI_BACKUP_PING_URL` when it's done. It fails when there's nowhere off the machine to put the dump. Put the settings in `backup.env` in mekiki's directory and run it daily:
 
 ```cron
 17 3 * * *  cd /srv/mekiki && scripts/backup.sh >> /var/log/mekiki-backup.log 2>&1
@@ -137,21 +154,21 @@ docker compose up -d mekiki
 
 ## 9. Upgrades and rollback
 
+Releases are listed at [github.com/atresnjo/mekiki/releases](https://github.com/atresnjo/mekiki/releases), with what changed. Run a fixed one: `MEKIKI_VERSION` in `.env`, never `latest`, so a restart or a new machine doesn't upgrade on its own.
+
 Upgrading:
 
 ```bash
 scripts/backup.sh                       # a dump from just before
-git rev-parse HEAD > .previous-release  # where a rollback goes back to
-git pull && docker compose up -d --build
-docker compose logs -f mekiki           # migrations, "mekiki api on …", both agents' versions
+# in .env: MEKIKI_VERSION=0.3.0 (write down the one it was: a rollback goes back to it)
+docker compose pull && docker compose up -d
+docker compose logs -f mekiki           # migrations, "mekiki api on …"
 ```
+
+When a release's notes say its `docker-compose.yml` or `env.example` changed, download them again from that release (`https://github.com/atresnjo/mekiki/releases/download/v0.3.0/docker-compose.yml`) before pulling; `.env` stays yours.
 
 A restart leaves running reviews to the new process, which takes them up again. The database migrates forward at startup and migrations aren't undone.
 
-Rolling back:
-
-```bash
-git checkout "$(cat .previous-release)" && docker compose up -d --build
-```
+Rolling back: put the previous `MEKIKI_VERSION` back in `.env`, then `docker compose up -d`.
 
 If the release being undone added a migration the previous one can't run with, restore the dump taken before the upgrade (section 7) as well. Every migration so far only adds tables and columns, which an older mekiki ignores, except that a mekiki from before Better Auth signs in with `MEKIKI_TOKEN` instead.

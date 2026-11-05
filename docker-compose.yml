@@ -1,8 +1,10 @@
-# mekiki on a vps: `docker compose up -d --build`. web (caddy, with the dashboard) answers on 80 and 443
-# for MEKIKI_DOMAIN (point its dns here first) and forwards /api/ to mekiki, which isn't reachable from outside
+# mekiki on a vps: this file and a .env beside it, then `docker compose up -d`. web (caddy, with the dashboard)
+# answers on 80 and 443 for MEKIKI_DOMAIN (point its dns here first) and forwards /api/ to mekiki, which isn't
+# reachable from outside. the images are the release MEKIKI_VERSION names: a release's copy of this file
+# (github.com/atresnjo/mekiki/releases) defaults to that release, this one to the newest
 services:
   mekiki:
-    build: { context: ., target: api }
+    image: ghcr.io/atresnjo/mekiki-api:${MEKIKI_VERSION:-latest}
     restart: unless-stopped
     env_file: .env
     # what the setup depends on: not overridable from .env
@@ -58,7 +60,7 @@ services:
     logging: *logs
 
   web:
-    build: { context: ., target: web }
+    image: ghcr.io/atresnjo/mekiki-web:${MEKIKI_VERSION:-latest}
     restart: unless-stopped
     environment:
       MEKIKI_DOMAIN: ${MEKIKI_DOMAIN:?set MEKIKI_DOMAIN in .env}

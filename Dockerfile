@@ -4,12 +4,16 @@
 #   web: caddy, serving the built dashboard and forwarding /api/ to the api, so both share one origin
 #        (the session cookie and the rpc need that). it gets the https certificate too
 #
-#   docker build --target api -t mekiki-api .
-#   docker build --target web -t mekiki-web .
+# a v* tag publishes both to ghcr.io/atresnjo/mekiki-api and mekiki-web, for amd64 and arm64
+# (.github/workflows/check.yml). from source:
+#
+#   docker build --target api -t ghcr.io/atresnjo/mekiki-api:dev .
+#   docker build --target web -t ghcr.io/atresnjo/mekiki-web:dev .
 ARG BUN_VERSION=1.4.2
 
 # ---------- what both builds start from ----------
-FROM oven/bun:${BUN_VERSION}-alpine AS deps
+# on the machine's own platform: what it builds is javascript and static files, the same for every one
+FROM --platform=$BUILDPLATFORM oven/bun:${BUN_VERSION}-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
@@ -56,7 +60,7 @@ ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["bun", "dist/main.js"]
 
 # ---------- the dashboard, served ----------
-FROM caddy:2-alpine AS web
+FROM caddy:2.11.8-alpine AS web
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY --from=web-build /app/web/dist /srv
 # MEKIKI_DOMAIN: where it answers, with a certificate from let's encrypt (":80" behind a proxy that does
