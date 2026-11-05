@@ -218,3 +218,7 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 CI runs the checks, then publishes both images for amd64 and arm64 (`0.2.0`, `0.2`, `latest`). It also creates a GitHub release with generated notes and attaches `docker-compose.yml` (pinned to `0.2.0`), `env.example` and the backup scripts. A pre-release tag (`v0.2.0-rc.1`) publishes only its own image tag and is marked as a pre-release. That's what staging runs (see [docs/operations.md](docs/operations.md#6-release-rehearsal-on-staging)).
+
+## License
+
+[MIT](LICENSE)
