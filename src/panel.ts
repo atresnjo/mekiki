@@ -8,6 +8,9 @@ import { Store } from "./store.ts"
 
 export const MARKER = "<!-- mekiki:panel -->"
 
+/** the heading on everything mekiki posts. the logo comes from the repository's main branch, github proxies it */
+export const HEADING = `### <img src="https://raw.githubusercontent.com/atresnjo/mekiki/main/docs/logo-mark.png" alt="" width="20" height="20" align="top"> mekiki`
+
 export type State =
   /** nothing reviewed yet */
   | { readonly kind: "waiting" }
@@ -54,7 +57,7 @@ const status = (state: State): readonly [string, string] => {
 export const render = (state: State): string => {
   const [line, prompt] = status(state)
   const boxes = DEPTHS.map(([depth, name, hint]) => `- [ ] **${name}**: ${hint} <!-- mekiki:${depth} -->`).join("\n")
-  return `${MARKER}\n### ⚡ mekiki\n\n${line}\n\n${prompt}\n\n${boxes}`
+  return `${MARKER}\n${HEADING}\n\n${line}\n\n${prompt}\n\n${boxes}`
 }
 
 const ticked = (body: string): Set<Depth> =>

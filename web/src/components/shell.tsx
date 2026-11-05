@@ -106,7 +106,7 @@ export const Header = ({ status, live, signedOut }: { status: Status | undefined
   <header className="flex h-10 items-center justify-between gap-3">
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
       <Link to="/" className="flex items-center gap-1.5">
-        <Icon icon={FlashIcon} size={18} strokeWidth={2} className="text-kumo-brand" />
+        <img src="/logo-mark.png" alt="" width={22} height={22} />
         <span className="text-[15px] font-semibold tracking-tight text-kumo-strong">mekiki</span>
       </Link>
       <span aria-hidden className="hidden text-lg font-light text-kumo-inactive sm:inline">
@@ -251,6 +251,7 @@ export const SignIn = () => {
     <LayerCard className="mx-auto w-full max-w-md">
       <LayerCard.Primary>
         <div className="flex flex-col gap-4">
+          <img src="/icon-192.png" alt="" width={64} height={64} />
           <div className="flex flex-col gap-1">
             <Text variant="heading" size="lg" as="h1">
               Sign in

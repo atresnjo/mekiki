@@ -1,3 +1,5 @@
+<img src="docs/logo.png" alt="" width="128" height="128" />
+
 # mekiki
 
 Self-hosted pull request reviews. mekiki runs Claude Code or Codex on your own subscription, or any model through an API key: OpenAI, Anthropic, Google, or a gateway like LiteLLM or OpenRouter.
@@ -17,7 +19,7 @@ Each repository stays on disk as a bare git clone between reviews, so a push tha
 mekiki keeps one comment on each pull request:
 
 ```
-⚡ mekiki
+mekiki
 ✅ Reviewed abcd712 at High in 8.8s: 2 issues in the review below.
 Review again at:
 - [ ] Light: the fastest pass

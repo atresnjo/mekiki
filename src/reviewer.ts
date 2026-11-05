@@ -22,7 +22,7 @@ import {
   type Usage,
 } from "./domain.ts"
 import { GitHub } from "./github.ts"
-import { Panel } from "./panel.ts"
+import { HEADING, Panel } from "./panel.ts"
 import { reviewPrompt, system } from "./prompt.ts"
 import { Store } from "./store.ts"
 
@@ -212,7 +212,7 @@ export const reviewBody = (
   const found = review.findings.length === 0 ? "No issues found" : `${review.findings.length} issue${review.findings.length === 1 ? "" : "s"}`
   // partial: "no issues" would claim more than was looked at
   const counts = missing > 0 ? `${found} in the files reviewed` : found
-  const lines = [`### mekiki`]
+  const lines = [HEADING]
   if (missing > 0)
     lines.push(
       `> [!WARNING]\n> **Partial review: ${missing} of ${review.files} file${review.files === 1 ? "" : "s"} couldn't be reviewed**${notes.failure ? ` (${notes.failure.slice(0, 200)})` : ""}. Tick a depth in mekiki's comment to try again.`,
