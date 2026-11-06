@@ -1,0 +1,86 @@
+# mekiki on a vps: this file and a .env beside it, then `docker compose up -d`. web (caddy, with the dashboard)
+# answers on 80 and 443 for MEKIKI_DOMAIN (point its dns here first) and forwards /api/ to mekiki, which isn't
+# reachable from outside. the images are the release MEKIKI_VERSION names: a release's copy of this file
+# (github.com/atresnjo/mekiki/releases) defaults to that release, this one to the newest
+services:
+  mekiki:
+    image: ghcr.io/atresnjo/mekiki-api:${MEKIKI_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    # what the setup depends on: not overridable from .env
+    environment:
+      MEKIKI_ENV: production
+      # the image has no clis: reviews are the api agent's, on MEKIKI_API_PROVIDER's key
+      MEKIKI_CLI_AGENTS: "false"
+      BETTER_AUTH_URL: https://${MEKIKI_DOMAIN:?set MEKIKI_DOMAIN in .env}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set GITHUB_WEBHOOK_SECRET in .env}
+      HOST: 0.0.0.0
+      PORT: "7420"
+      DATABASE_URL: postgres://mekiki:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/mekiki
+      MEKIKI_CHECKOUTS: /data/checkouts
+      MEKIKI_LOG_FORMAT: json
+      MEKIKI_TRUST_PROXY: "true"
+    volumes:
+      - mekiki-data:/data
+    # mekiki migrates the database when it starts: it needs postgres up first
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # a stop leaves running reviews to the next start, which takes them up again
+    stop_grace_period: 30s
+    # it fetches and reads untrusted code: it gets this much of the machine, no more
+    deploy:
+      resources:
+        limits:
+          cpus: "${MEKIKI_CPUS:-2}"
+          memory: ${MEKIKI_MEMORY:-4g}
+          pids: 1024
+    logging: &logs
+      driver: json-file
+      options: { max-size: 20m, max-file: "5" }
+
+  # reachable only from mekiki, on the compose network
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mekiki
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: mekiki
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mekiki -d mekiki"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 1g }
+    logging: *logs
+
+  web:
+    image: ghcr.io/atresnjo/mekiki-web:${MEKIKI_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      MEKIKI_DOMAIN: ${MEKIKI_DOMAIN:?set MEKIKI_DOMAIN in .env}
+      MEKIKI_API_URL: http://mekiki:7420
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - mekiki
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 256m }
+    logging: *logs
+
+volumes:
+  mekiki-data:
+  postgres-data:
+  caddy-data:
+  caddy-config:

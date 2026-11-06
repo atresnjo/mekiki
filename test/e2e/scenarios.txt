@@ -1,0 +1,11 @@
+Verification scenarios, recorded before implementation:
+- Unauthenticated callers must not receive subscription usage.
+- Provider windows show actual percentages and reset times, including genuine zero and exhausted quota.
+- Missing, expired, forbidden, malformed, rate-limited, or timed-out provider data must show unavailable, never zero; one provider failure must not hide the other.
+- Provider credentials and raw error bodies must never appear in RPC responses or subprocess errors.
+- Repeated usage reads must be cached to avoid provider throttling.
+- Agent environments must omit GitHub/database/dashboard secrets and API-key billing overrides.
+- Retrying a dry run must preserve no-post behavior.
+- A copied checkbox comment must not trigger a review; the stored panel comment still must.
+- Desktop/mobile usage display must remain legible and refresh without losing the rest of the dashboard.
+- Commenters without write access must not be able to spend the subscription with /mekiki; collaborators may still request reviews.

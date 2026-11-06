@@ -1,0 +1,186 @@
+// the rpc api (rpc.ts) on top of mekiki's services, served at RPC_PATH (http + ndjson).
+// every call is checked by the Authenticated middleware: better auth's session, and whether they're still allowed in
+import { Clock, Duration, Effect, Layer, Option, Stream } from "effect"
+import { RpcSerialization, RpcServer } from "effect/rpc"
+import { Agent } from "./agent.ts"
+import { Auth } from "./auth.ts"
+import type { AppConfig } from "./config.ts"
+import { type AgentKind, cleanList, type Depth, isRepo, parsePrUrl, type Review, type Settings, settingsProblem } from "./domain.ts"
+import { GitHub } from "./github.ts"
+import { Health } from "./health.ts"
+import { Reviewer } from "./reviewer.ts"
+import { Authenticated, CurrentUser, Failed, MekikiRpcs, HEARTBEAT, Invalid, NotFound, PAGE, RPC_PATH, ReviewsEvent, Unauthorized } from "./rpc.ts"
+import { Store } from "./store.ts"
+import { Usage } from "./usage.ts"
+
+const depthOverride = (depth: Depth | undefined) => (depth ? { depth } : {})
+
+/** the rules and lists as saved: lists tidied, and refused when something in them can't be right */
+const checked = <S extends Pick<Settings, "rules" | "blockedAuthors" | "allowedAuthors" | "exclude">>(settings: S) => {
+  const clean = {
+    ...settings,
+    rules: settings.rules.trim(),
+    blockedAuthors: cleanList(settings.blockedAuthors),
+    allowedAuthors: cleanList(settings.allowedAuthors),
+    exclude: cleanList(settings.exclude),
+  }
+  const problem = settingsProblem(clean)
+  return problem === undefined ? Effect.succeed(clean) : Effect.fail(new Invalid({ message: problem }))
+}
+
+/** what started a review, and who: "manual by alice@acme.com" */
+const by = (trigger: string) => Effect.map(CurrentUser, (user) => (user.email ? `${trigger} by ${user.email}` : trigger))
+
+const prOf = (review: Review) => {
+  const [owner = "", repo = ""] = review.repo.split("/")
+  return { owner, repo, number: review.number }
+}
+
+/** Expected refusals stay typed; infrastructure failures and defects are logged and sanitized. */
+const failed = (defect: unknown) =>
+  Effect.logError("rpc failed", defect).pipe(Effect.andThen(Effect.fail(new Failed({ message: "mekiki failed: the details are in its log" }))))
+const api = <A, E, R>(effect: Effect.Effect<A, E | Store.StoreError, R>) => effect.pipe(Effect.catchTag("StoreError", failed), Effect.catchDefect(failed))
+
+export const AuthenticatedLive = Layer.effect(
+  Authenticated,
+  Effect.gen(function* () {
+    const auth = yield* Auth.Service
+    return Authenticated.of(
+      Effect.fn("Rpc.authenticate")(function* (effect, { headers }) {
+        const user = yield* auth.user(Auth.webHeaders(headers))
+        if (Option.isNone(user)) return yield* new Unauthorized({ message: "sign in to use mekiki" })
+        return yield* Effect.provideService(effect, CurrentUser, user.value)
+      }),
+    )
+  }),
+)
+
+export const HandlersLive = (config: AppConfig) =>
+  MekikiRpcs.toLayer(
+    Effect.gen(function* () {
+      const reviewer = yield* Reviewer.Service
+      const store = yield* Store.Service
+      const agent = yield* Agent.Service
+      const health = yield* Health.Service
+      const auth = yield* Auth.Service
+      const usage = yield* Usage.Service
+      const github = yield* GitHub.Service
+
+      const reviewById = Effect.fn("Rpc.reviewById")(function* (id: number) {
+        const review = yield* store.get(id)
+        if (Option.isNone(review)) return yield* new NotFound({ message: `no review ${id}` })
+        return review.value
+      })
+
+      // the model lists cost a process spawn, and change only with a cli update. an agent that's off has none
+      const modelsOf = (kind: AgentKind) =>
+        agent.offered.includes(kind) ? agent.models(kind).pipe(Effect.orElseSucceed(() => [{ id: "", label: "Default" }])) : Effect.succeed([])
+      const models = yield* Effect.cachedWithTTL(
+        Effect.all({ claude: modelsOf("claude"), codex: modelsOf("codex"), api: modelsOf("api") }, { concurrency: "unbounded" }),
+        Duration.minutes(10),
+      )
+
+      return MekikiRpcs.of({
+        WatchReviews: () =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              // subscribe before reading the list, so a change in between isn't lost
+              const changes = yield* reviewer.subscribe
+              const reviews = yield* store.list(PAGE)
+              const heartbeats = Stream.tick(HEARTBEAT).pipe(Stream.map(() => ReviewsEvent.cases.Heartbeat.make({})))
+              return Stream.succeed(ReviewsEvent.cases.Snapshot.make({ reviews })).pipe(
+                Stream.concat(Stream.fromSubscription(changes).pipe(Stream.map((review) => ReviewsEvent.cases.Changed.make({ review })))),
+                Stream.merge(heartbeats),
+              )
+            }),
+          ).pipe(
+            Stream.catchTag("StoreError", (error) => Stream.fromEffect(failed(error))),
+            Stream.catchDefect((defect) => Stream.fromEffect(failed(defect))),
+          ),
+
+        ListReviews: ({ before }) => store.listBefore(before, PAGE).pipe(api),
+
+        StartReview: Effect.fn("Rpc.StartReview")(function* ({ url, dryRun, depth }) {
+          const ref = parsePrUrl(url)
+          if (!ref) return yield* new Invalid({ message: "expected a pull request url like https://github.com/owner/repo/pull/123" })
+          yield* reviewer.start(ref, { trigger: yield* by("manual"), dryRun, overrides: depthOverride(depth) })
+        }, api),
+
+        RetryReview: Effect.fn("Rpc.RetryReview")(function* ({ id, depth }) {
+          const review = yield* reviewById(id)
+          yield* reviewer.start(prOf(review), {
+            trigger: yield* by(depth ? `retry ${depth}` : "retry"),
+            dryRun: review.dryRun,
+            overrides: depthOverride(depth),
+          })
+        }, api),
+
+        CancelReview: Effect.fn("Rpc.CancelReview")(function* ({ id }) {
+          const review = yield* reviewById(id)
+          yield* Effect.logInfo(`${yield* by("cancelled")} ${review.repo}#${review.number}`)
+          yield* reviewer.cancel(prOf(review))
+        }, api),
+
+        // the subscriptions are the clis': with them off there's nothing to check, and nothing is started
+        GetUsage: Effect.fn("Rpc.GetUsage")(function* () {
+          if (agent.offered.includes("claude")) return yield* usage.read
+          const off = { windows: [], checkedAt: yield* Clock.currentTimeMillis, unavailable: "The CLI agents are off." }
+          return { claude: off, codex: off }
+        }, api),
+
+        GetStatus: Effect.fn("Rpc.GetStatus")(function* () {
+          const agents = yield* health.agents
+          return { agents, offered: agent.offered, webhook: Option.isSome(config.github.webhookSecret), auth: auth.enabled, user: yield* CurrentUser }
+        }, api),
+
+        GetSettings: () => store.settings.pipe(api),
+
+        GetModels: () => models.pipe(api),
+
+        SaveSettings: Effect.fn("Rpc.SaveSettings")(function* (settings) {
+          if (!agent.offered.includes(settings.agent)) return yield* new Invalid({ message: `the ${settings.agent} agent is off here` })
+          const offered = yield* models
+          if (!offered[settings.agent].some((model) => model.id === settings.model))
+            return yield* new Invalid({ message: `${settings.agent} has no model "${settings.model}"` })
+          return yield* store.saveSettings(yield* checked(settings))
+        }, api),
+
+        GetRepoSettings: () => store.repoSettings.pipe(api),
+
+        SaveRepoSettings: Effect.fn("Rpc.SaveRepoSettings")(function* (settings) {
+          const repo = settings.repo.trim()
+          if (!isRepo(repo)) return yield* new Invalid({ message: `expected a repository like owner/repo, not "${settings.repo}"` })
+          const clean = yield* checked({ ...settings, repo })
+          yield* Effect.logInfo(`${yield* by("repository settings saved")} for ${repo}`)
+          return yield* store.saveRepoSettings(clean)
+        }, api),
+
+        DeleteRepoSettings: Effect.fn("Rpc.DeleteRepoSettings")(function* ({ repo }) {
+          yield* Effect.logInfo(`${yield* by("repository settings removed")} for ${repo}`)
+          yield* store.deleteRepoSettings(repo.trim())
+        }, api),
+
+        GetRepos: Effect.fn("Rpc.GetRepos")(function* () {
+          // github not answering leaves the suggestions to what's been reviewed: the dialog still works
+          const [reachable, reviewed] = yield* Effect.all(
+            [
+              github.repositories.pipe(
+                Effect.catchTag("GitHubError", (error) => Effect.logWarning("couldn't list the repositories mekiki can reach", error).pipe(Effect.as([]))),
+              ),
+              store.reviewedRepos,
+            ],
+            { concurrency: "unbounded" },
+          )
+          return [...new Set([...reachable, ...reviewed].map((r) => r.toLowerCase()))].sort()
+        }, api),
+      })
+    }),
+  )
+
+/** POST RPC_PATH: the handlers, the auth middleware, ndjson so the review stream works over plain http */
+export const routes = (config: AppConfig) =>
+  RpcServer.layerHttp({ group: MekikiRpcs, path: RPC_PATH, protocol: "http" }).pipe(
+    Layer.provide(HandlersLive(config)),
+    Layer.provide(AuthenticatedLive),
+    Layer.provide(RpcSerialization.layerNdjson),
+  )

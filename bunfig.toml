@@ -1,0 +1,5 @@
+[install]
+# drizzle's effect v4 support needs rc.5, and skullet (the dashboard's skeletons) is days old with no
+# release past the window yet: both exempt from the global 7-day minimumReleaseAge, and pinned
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = ["drizzle-orm", "drizzle-kit", "skullet"]
