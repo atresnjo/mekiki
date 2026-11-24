@@ -27,11 +27,12 @@ function Root() {
       ) : (
         <>
           <StartForm reviews={feed?.reviews ?? []} depth={settings?.depth} onDepth={changeDepth} />
-          {status && !status.agents.claude && !status.agents.codex && (
+          {/* any one agent can review: the api agent alone (the docker image) is enough */}
+          {status && !status.agents.claude && !status.agents.codex && !status.agents.api && (
             <Banner
               variant="alert"
-              title="No agent CLI found"
-              description="Install and log in to Claude Code (claude) or Codex (codex) on this machine: mekiki runs reviews through them on your subscription."
+              title="No review agent available"
+              description="Set an API key (MEKIKI_API_PROVIDER, MEKIKI_API_MODEL and the provider's key), or install and log in to Claude Code (claude) or Codex (codex) on this machine."
             />
           )}
           {/* each page draws its own skeleton until the feed connects */}

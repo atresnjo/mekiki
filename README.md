@@ -139,12 +139,19 @@ The GitHub token needs read access to contents, and write access to pull request
 
 ## Deploy
 
-mekiki ships as two images, for amd64 and arm64:
+mekiki ships as one image, `ghcr.io/atresnjo/mekiki-api` (about 110 MB), for amd64 and arm64. It holds the server, bundled into one file, on Alpine with git, and the built dashboard, which the server serves on the same port (`MEKIKI_WEB_DIR`), so both share one origin. It reviews with the API agent only. Claude Code and Codex aren't in the image, and `MEKIKI_CLI_AGENTS=false` takes them out of the dashboard.
 
-- `ghcr.io/atresnjo/mekiki-api` (about 110 MB): the server, bundled into one file, on Alpine with git. It reviews with the API agent only. Claude Code and Codex aren't in the image, and `MEKIKI_CLI_AGENTS=false` takes them out of the dashboard.
-- `ghcr.io/atresnjo/mekiki-web`: Caddy with the built dashboard. It forwards `/api/` to the api (`MEKIKI_API_URL`, default `http://mekiki:7420`), so both share one origin, and gets the TLS certificate for `MEKIKI_DOMAIN`.
+Each release is tagged `0.2.0`, `0.2` and `latest`. Docker Compose runs two containers: `mekiki` and `postgres`. mekiki speaks plain HTTP on `127.0.0.1:7420` (`MEKIKI_LISTEN`), so HTTPS is up to a reverse proxy in front of it (Caddy, nginx, Traefik, a load balancer) that forwards everything for `MEKIKI_DOMAIN` to it. With Caddy on the host, that's two lines:
 
-Each release is tagged `0.2.0`, `0.2` and `latest`. Docker Compose runs three containers: `mekiki` (the api), `postgres` and `web`. Only `web` is reachable from outside. On a host whose own proxy does HTTPS, run `web` with `MEKIKI_DOMAIN=:80` and point the proxy at it.
+```
+mekiki.example.com {
+	reverse_proxy 127.0.0.1:7420 {
+		flush_interval -1
+	}
+}
+```
+
+The proxy must not buffer responses: the live review feed is one long streamed response.
 
 You don't need the source. Download the release's compose file and env template into a directory on the server:
 
@@ -158,7 +165,7 @@ docker compose up -d
 
 The compose file runs the release it came from. To pin a different one, set `MEKIKI_VERSION=0.2.0` in `.env`.
 
-1. Point `MEKIKI_DOMAIN` at the server and open ports 80 and 443.
+1. Point `MEKIKI_DOMAIN` at the server and set up the reverse proxy for it.
 2. Set up the [API agent](#subscription-or-api-key): `MEKIKI_API_PROVIDER`, `MEKIKI_API_MODEL` and the provider's key.
 3. Create a GitHub App with read access to contents, write access to pull requests and issues, and the **Pull requests** and **Issue comments** events. Its webhook goes to `https://<domain>/api/webhooks/github`. A personal `GITHUB_TOKEN` works too.
 4. Set up sign-in with GitHub and/or SSO (OIDC or SAML), and say who's allowed in with `MEKIKI_ALLOWED_EMAILS`, `MEKIKI_ALLOWED_GITHUB_ORGS` or `MEKIKI_SSO_DOMAIN`. In production mekiki won't start without this.
@@ -167,11 +174,10 @@ The compose file runs the release it came from. To pin a different one, set `MEK
 
 To upgrade, set `MEKIKI_VERSION` to the new release (see [releases](https://github.com/atresnjo/mekiki/releases)), then run `docker compose pull && docker compose up -d`. The database migrates when mekiki starts. Take a backup first.
 
-To run your own build, build the images from a checkout and point `MEKIKI_VERSION` at them:
+To run your own build, build the image from a checkout and point `MEKIKI_VERSION` at it:
 
 ```bash
 docker build --target api -t ghcr.io/atresnjo/mekiki-api:dev .
-docker build --target web -t ghcr.io/atresnjo/mekiki-web:dev .
 MEKIKI_VERSION=dev docker compose up -d
 ```
 
@@ -217,7 +223,7 @@ Push a version tag:
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-CI runs the checks, then publishes both images for amd64 and arm64 (`0.2.0`, `0.2`, `latest`). It also creates a GitHub release with generated notes and attaches `docker-compose.yml` (pinned to `0.2.0`), `env.example` and the backup scripts. A pre-release tag (`v0.2.0-rc.1`) publishes only its own image tag and is marked as a pre-release. That's what staging runs (see [docs/operations.md](docs/operations.md#6-release-rehearsal-on-staging)).
+CI runs the checks, then publishes the image for amd64 and arm64 (`0.2.0`, `0.2`, `latest`). It also creates a GitHub release with generated notes and attaches `docker-compose.yml` (pinned to `0.2.0`), `env.example` and the backup scripts. A pre-release tag (`v0.2.0-rc.1`) publishes only its own image tag and is marked as a pre-release. That's what staging runs (see [docs/operations.md](docs/operations.md#6-release-rehearsal-on-staging)).
 
 ## License
 

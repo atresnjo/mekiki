@@ -1,10 +1,11 @@
-// mekiki server: the rpc api, signing in (better auth), health and the github webhook. the dashboard is its own app (web/)
+// mekiki server: the rpc api, signing in (better auth), health, the github webhook and, built, the dashboard (web/)
 import { BunHttpServer, BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpRouter } from "effect/http"
 import * as App from "./app.ts"
 import { Auth } from "./auth.ts"
 import { AppConfig } from "./config.ts"
+import { Dashboard } from "./dashboard.ts"
 import { Health } from "./health.ts"
 import { Instance } from "./instance.ts"
 import * as Http from "./http.ts"
@@ -15,7 +16,7 @@ import { Usage } from "./usage.ts"
 const Main = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* AppConfig
-    const Routes = Layer.mergeAll(Http.routes(config), Rpc.routes(config), Auth.routes(config), Health.routes)
+    const Routes = Layer.mergeAll(Http.routes(config), Rpc.routes(config), Auth.routes(config), Health.routes, Dashboard.routes(config))
     // the lock first: a second instance stops before it resumes anyone's review
     const Services = Layer.mergeAll(Health.layer, Auth.layer(config), Usage.layer(config.agent)).pipe(
       Layer.provideMerge(App.layer(config)),

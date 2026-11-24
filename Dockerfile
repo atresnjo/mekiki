@@ -1,15 +1,13 @@
-# mekiki as two images from one file, deployed side by side:
-#   api: the server (bundled into one file, no node_modules) with git for checkouts, ~110 MB. it reviews
-#        with the api agent, on an API key: the claude and codex clis aren't in it, and are off
-#   web: caddy, serving the built dashboard and forwarding /api/ to the api, so both share one origin
-#        (the session cookie and the rpc need that). it gets the https certificate too
+# mekiki's image: the server (bundled into one file, no node_modules) with git for checkouts, and the built
+# dashboard, which it serves itself on the same port: one origin, as the session cookie and the rpc need.
+# it reviews with the api agent, on an API key: the claude and codex clis aren't in it, and are off.
+# it speaks plain http: https is the reverse proxy's in front of it (traefik, caddy, nginx, a load balancer)
 #
-# a v* tag publishes both to ghcr.io/atresnjo/mekiki-api and mekiki-web, for amd64 and arm64
-# (.github/workflows/check.yml). from source:
+# a v* tag publishes it to ghcr.io/atresnjo/mekiki-api, for amd64 and arm64 (.github/workflows/check.yml).
+# from source:
 #
 #   docker build --target api -t ghcr.io/atresnjo/mekiki-api:dev .
-#   docker build --target web -t ghcr.io/atresnjo/mekiki-web:dev .
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.5
 
 # ---------- what both builds start from ----------
 # on the machine's own platform: what it builds is javascript and static files, the same for every one
@@ -35,10 +33,13 @@ RUN bun run build
 
 # ---------- the api ----------
 FROM oven/bun:${BUN_VERSION}-alpine AS api
-# git fetches the code (tar, busybox's, when it can't); tini reaps them
-RUN apk add --no-cache git tini
+# git fetches the code (tar, busybox's, when it can't); tini reaps them. apk upgrade: the base image's
+# own packages (openssl, musl, zlib) get the security fixes released since it was built
+RUN apk upgrade --no-cache && apk add --no-cache git tini
 WORKDIR /app
 COPY --from=api-build /app/dist dist
+# the dashboard, served from here (MEKIKI_WEB_DIR)
+COPY --from=web-build /app/web/dist web
 # applied at startup: the database is brought up to date before anything else runs
 COPY drizzle drizzle
 # what mekiki keeps on disk (the checkouts) lives in /data: one volume. the database is postgres
@@ -51,6 +52,7 @@ ENV MEKIKI_ENV=production \
     HOST=0.0.0.0 \
     PORT=7420 \
     MEKIKI_CHECKOUTS=/data/checkouts \
+    MEKIKI_WEB_DIR=/app/web \
     MEKIKI_LOG_FORMAT=json \
     MEKIKI_TRUST_PROXY=true
 VOLUME /data
@@ -58,11 +60,3 @@ EXPOSE 7420
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 CMD wget -qO /dev/null http://127.0.0.1:7420/api/health || exit 1
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["bun", "dist/main.js"]
-
-# ---------- the dashboard, served ----------
-FROM caddy:2.11.8-alpine AS web
-COPY Caddyfile /etc/caddy/Caddyfile
-COPY --from=web-build /app/web/dist /srv
-# MEKIKI_DOMAIN: where it answers, with a certificate from let's encrypt (":80" behind a proxy that does
-# https already). MEKIKI_API_URL: where the api is, as caddy reaches it
-ENV MEKIKI_API_URL=http://mekiki:7420

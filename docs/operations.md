@@ -4,9 +4,9 @@ What the README's deploy section leaves out: setting up signing in, the GitHub A
 
 ## 1. The machine
 
-- A VPS with Docker and the compose plugin, amd64 or arm64. 2 CPUs and 4 GB of memory review comfortably at `AGENT_CONCURRENCY=4`; the `mekiki` container is limited to `MEKIKI_CPUS` / `MEKIKI_MEMORY` (default 2 and 4g), postgres to 1 CPU and 1 GB, caddy to 256 MB. Container logs rotate at 5 × 20 MB each.
+- A VPS with Docker and the compose plugin, amd64 or arm64. 2 CPUs and 4 GB of memory review comfortably at `AGENT_CONCURRENCY=4`; the `mekiki` container is limited to `MEKIKI_CPUS` / `MEKIKI_MEMORY` (default 2 and 4g), postgres to 1 CPU and 1 GB. Container logs rotate at 5 × 20 MB each.
 - Disk: the checkouts stay under `MEKIKI_DISK_BUDGET_MB` (default 20 GB), plus postgres, plus the local backups. Leave headroom.
-- Open ports 80 and 443 only. Point `MEKIKI_DOMAIN`'s DNS at the machine before the first start: Caddy gets the certificate on its own.
+- A reverse proxy that does HTTPS for `MEKIKI_DOMAIN` and forwards to `127.0.0.1:7420` without buffering (the README's deploy section has a Caddy example). Open ports 80 and 443 only; mekiki itself listens on localhost.
 - Run **one** mekiki per database. Who's reviewing what, the rate limits and the live feed live in the process's memory, so mekiki takes a postgres advisory lock at startup and a second instance refuses to start (`AlreadyRunning`).
 
 ### The directory
