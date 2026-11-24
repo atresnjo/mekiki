@@ -9,7 +9,7 @@
 #
 #   docker build --target api -t ghcr.io/atresnjo/mekiki-api:dev .
 #   docker build --target web -t ghcr.io/atresnjo/mekiki-web:dev .
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.5
 
 # ---------- what both builds start from ----------
 # on the machine's own platform: what it builds is javascript and static files, the same for every one
@@ -35,8 +35,9 @@ RUN bun run build
 
 # ---------- the api ----------
 FROM oven/bun:${BUN_VERSION}-alpine AS api
-# git fetches the code (tar, busybox's, when it can't); tini reaps them
-RUN apk add --no-cache git tini
+# git fetches the code (tar, busybox's, when it can't); tini reaps them. apk upgrade: the base image's
+# own packages (openssl, musl, zlib) get the security fixes released since it was built
+RUN apk upgrade --no-cache && apk add --no-cache git tini
 WORKDIR /app
 COPY --from=api-build /app/dist dist
 # applied at startup: the database is brought up to date before anything else runs
@@ -59,8 +60,17 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 CMD wget
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["bun", "dist/main.js"]
 
+# ---------- caddy, rebuilt with the go dependencies that have security fixes newer than its release ----------
+# go cross-compiles, so this runs on the build machine's platform for every target
+FROM --platform=$BUILDPLATFORM caddy:2.11.9-builder-alpine AS caddy-build
+ARG TARGETOS TARGETARCH
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build --output /usr/bin/caddy \
+    --replace golang.org/x/net=golang.org/x/net@v0.63.0
+
 # ---------- the dashboard, served ----------
-FROM caddy:2.11.8-alpine AS web
+FROM caddy:2.11.9-alpine AS web
+RUN apk upgrade --no-cache
+COPY --from=caddy-build /usr/bin/caddy /usr/bin/caddy
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY --from=web-build /app/web/dist /srv
 # MEKIKI_DOMAIN: where it answers, with a certificate from let's encrypt (":80" behind a proxy that does
