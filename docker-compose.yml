@@ -1,7 +1,8 @@
-# mekiki on a vps: this file and a .env beside it, then `docker compose up -d`. web (caddy, with the dashboard)
-# answers on 80 and 443 for MEKIKI_DOMAIN (point its dns here first) and forwards /api/ to mekiki, which isn't
-# reachable from outside. the images are the release MEKIKI_VERSION names: a release's copy of this file
-# (github.com/atresnjo/mekiki/releases) defaults to that release, this one to the newest
+# mekiki on a vps: this file and a .env beside it, then `docker compose up -d`. mekiki serves the dashboard and
+# the api on one port, plain http, on 127.0.0.1:7420 (MEKIKI_LISTEN): the reverse proxy in front of it (caddy,
+# nginx, traefik) does https for MEKIKI_DOMAIN and forwards everything to it. the image is the release
+# MEKIKI_VERSION names: a release's copy of this file (github.com/atresnjo/mekiki/releases) defaults to that
+# release, this one to the newest
 services:
   mekiki:
     image: ghcr.io/atresnjo/mekiki-api:${MEKIKI_VERSION:-latest}
@@ -20,6 +21,10 @@ services:
       MEKIKI_CHECKOUTS: /data/checkouts
       MEKIKI_LOG_FORMAT: json
       MEKIKI_TRUST_PROXY: "true"
+    # for the proxy on this machine only. a proxy in another container: put it on this compose network and
+    # point it at http://mekiki:7420 instead
+    ports:
+      - "${MEKIKI_LISTEN:-127.0.0.1:7420}:7420"
     volumes:
       - mekiki-data:/data
     # mekiki migrates the database when it starts: it needs postgres up first
@@ -59,28 +64,6 @@ services:
         limits: { cpus: "1", memory: 1g }
     logging: *logs
 
-  web:
-    image: ghcr.io/atresnjo/mekiki-web:${MEKIKI_VERSION:-latest}
-    restart: unless-stopped
-    environment:
-      MEKIKI_DOMAIN: ${MEKIKI_DOMAIN:?set MEKIKI_DOMAIN in .env}
-      MEKIKI_API_URL: http://mekiki:7420
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - mekiki
-    deploy:
-      resources:
-        limits: { cpus: "1", memory: 256m }
-    logging: *logs
-
 volumes:
   mekiki-data:
   postgres-data:
-  caddy-data:
-  caddy-config:

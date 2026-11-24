@@ -22,6 +22,8 @@ export const AppConfig = Config.all({
   host: Config.String("HOST").pipe(Config.withDefault("127.0.0.1")),
   /** postgres. the default is the one the readme starts for development */
   databaseUrl: Config.Redacted("DATABASE_URL").pipe(Config.withDefault(Redacted.make("postgres://mekiki:mekiki@127.0.0.1:5432/mekiki"))),
+  /** the built dashboard (web/dist), served on the api's own port: the docker image's. unset, vite serves it (bun dev) */
+  webDir: Config.option(Config.String("MEKIKI_WEB_DIR").pipe(Config.map((dir) => resolve(dir)))),
   /**
    * production refuses to start without sign-in. it's production when MEKIKI_ENV says so (the docker
    * image does) or when mekiki listens beyond this machine: see requiresSignIn
