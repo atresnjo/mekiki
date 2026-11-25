@@ -2,6 +2,7 @@
 // External CLI fixture: real subprocess transport, no model calls or real credentials.
 import { appendFileSync } from "node:fs"
 import { join } from "node:path"
+import { serveClaude } from "./claude-protocol.ts"
 const dir = process.env.CODEX_HOME || process.env.CLAUDE_CONFIG_DIR!
 appendFileSync(
   join(dir, "calls.jsonl"),
@@ -43,15 +44,13 @@ if (process.argv.includes("app-server")) {
       )
     }
   }
-} else if (process.argv.includes("-p")) {
-  await Bun.stdin.text()
-  console.log(
-    JSON.stringify({
-      structured_output: { summary: "Fixture review completed", findings: [] },
-      usage: { input_tokens: 1200, cache_creation_input_tokens: 300, cache_read_input_tokens: 4500, output_tokens: 800 },
-      total_cost_usd: 0.0123,
-    }),
-  )
+} else if (process.argv.includes("--input-format")) {
+  // claude code, as the agent sdk runs it
+  await serveClaude(() => ({
+    structured_output: { summary: "Fixture review completed", findings: [] },
+    usage: { input_tokens: 1200, cache_creation_input_tokens: 300, cache_read_input_tokens: 4500, output_tokens: 800 },
+    total_cost_usd: 0.0123,
+  }))
 } else if (process.argv[2] === "exec") {
   await Bun.stdin.text()
   const out = process.argv[process.argv.indexOf("-o") + 1]!
@@ -59,4 +58,4 @@ if (process.argv.includes("app-server")) {
   console.log(JSON.stringify({ type: "thread.started", thread_id: "t" }))
   console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 9000, cached_input_tokens: 6000, output_tokens: 700 } }))
 } else if (process.argv.includes("--version")) console.log("fixture 1.0")
-else console.log(JSON.stringify({ loggedIn: true }))
+else console.log("logged in")

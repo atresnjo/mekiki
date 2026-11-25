@@ -8,7 +8,7 @@ import { expect, test } from "bun:test"
 import { sql } from "drizzle-orm"
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Cause, Effect, Layer, Option, Redacted, Schema, Stream } from "effect"
 import { RpcTest } from "effect/rpc"
@@ -72,14 +72,16 @@ test("Effect end-to-end rehearsal: real HTTP, agent processes, checkout, persist
   writeFileSync(
     fixture,
     `#!${process.execPath}
-const prompt = await Bun.stdin.text()
-if (prompt.includes("# Pull request: hold")) {
-  await fetch(${JSON.stringify(new URL("/agent-ready", server.url).href)}, { method: "POST", body: String(process.pid) })
-  await new Promise(() => {})
-}
-if (prompt.includes("### broken.ts")) { console.error("fixture chunk failed"); process.exit(1) }
-if (!(await Bun.file("good.ts").exists())) { console.error("checkout missing"); process.exit(2) }
-console.log(JSON.stringify({ structured_output: { summary: "Read the actual code.", findings: [] }, usage: { input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 50 }, total_cost_usd: 0.002 }))
+import { serveClaude } from ${JSON.stringify(resolve("test/e2e/claude-protocol.ts"))}
+await serveClaude(async (prompt) => {
+  if (prompt.includes("# Pull request: hold")) {
+    await fetch(${JSON.stringify(new URL("/agent-ready", server.url).href)}, { method: "POST", body: String(process.pid) })
+    await new Promise(() => {})
+  }
+  if (prompt.includes("### broken.ts")) { console.error("fixture chunk failed"); process.exit(1) }
+  if (!(await Bun.file("good.ts").exists())) { console.error("checkout missing"); process.exit(2) }
+  return { structured_output: { summary: "Read the actual code.", findings: [] }, usage: { input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 50 }, total_cost_usd: 0.002 }
+})
 `,
   )
   chmodSync(fixture, 0o755)
@@ -128,7 +130,17 @@ console.log(JSON.stringify({ structured_output: { summary: "Read the actual code
           Stream.runCollect,
         )
         expect(cancelled[0]?.status).toBe("cancelled")
-        expect(() => process.kill(pid, 0)).toThrow()
+        // the agent sdk gives claude code ~2s to exit on its own after the session closes, then kills it
+        const alive = () => {
+          try {
+            process.kill(pid, 0)
+            return true
+          } catch {
+            return false
+          }
+        }
+        yield* Effect.sleep("100 millis").pipe(Effect.repeat({ while: alive }), Effect.timeout("8 seconds"))
+        expect(alive()).toBe(false)
 
         const db = yield* Database.Service
         yield* db.execute(sql`drop table reviews`)

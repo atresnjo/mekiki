@@ -12,7 +12,7 @@ import { ArrowDown01Icon, FlashIcon, GithubIcon, IdCardIcon, Logout03Icon } from
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Exit } from "effect"
 import { type FormEvent, useEffect, useState } from "react"
-import { type Methods, methods, signInWith, signOut, takeSignInError } from "../lib/auth.ts"
+import { type Methods, methods, type Provider, signInWith, signOut, takeSignInError } from "../lib/auth.ts"
 import { type Depth, type Review, startReview, type Status, type User } from "../lib/mekiki.ts"
 import { Icon, menuIcon } from "./icon.tsx"
 import { SettingsDialog } from "./settings.tsx"
@@ -101,8 +101,8 @@ const Health = ({ status, live }: { status: Status | undefined; live: boolean })
   )
 }
 
-/** where you are on the left (mekiki / Reviews); on the right, how things stand, then settings and you. signed out: just the name */
-export const Header = ({ status, live, signedOut }: { status: Status | undefined; live: boolean; signedOut?: boolean }) => (
+/** where you are on the left (mekiki / Reviews); on the right, how things stand, then settings and you. signed out, there's none */
+export const Header = ({ status, live }: { status: Status | undefined; live: boolean }) => (
   <header className="flex h-10 items-center justify-between gap-3">
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
       <Link to="/" className="flex items-center gap-1.5">
@@ -116,16 +116,14 @@ export const Header = ({ status, live, signedOut }: { status: Status | undefined
         Reviews
       </Link>
     </nav>
-    {!signedOut && (
-      <div className="flex items-center gap-1">
-        {/* the subscriptions are the clis': nothing to show when the server has them off */}
-        {status?.offered.some((agent) => agent !== "api") && <UsageMenu />}
-        <Health status={status} live={live} />
-        <span aria-hidden className="mx-1 h-4 w-px bg-kumo-hairline" />
-        <SettingsDialog webhook={status?.webhook ?? false} offered={status?.offered} />
-        {status?.auth && <Account user={status.user} />}
-      </div>
-    )}
+    <div className="flex items-center gap-1">
+      {/* the subscriptions are the clis': nothing to show when the server has them off */}
+      {status?.offered.some((agent) => agent !== "api") && <UsageMenu />}
+      <Health status={status} live={live} />
+      <span aria-hidden className="mx-1 h-4 w-px bg-kumo-hairline" />
+      <SettingsDialog webhook={status?.webhook ?? false} offered={status?.offered} />
+      {status?.auth && <Account user={status.user} />}
+    </div>
   </header>
 )
 
@@ -223,10 +221,20 @@ const Account = ({ user }: { user: User }) => (
   </DropdownMenu>
 )
 
-/** signing in is on and nobody is: github and the company's sso, whichever the server offers */
+/** microsoft's four squares, as its sign-in buttons show them */
+const MicrosoftLogo = () => (
+  <svg width="16" height="16" viewBox="0 0 21 21" aria-hidden="true">
+    <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+    <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+    <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+    <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+  </svg>
+)
+
+/** signing in is on and nobody is: github, the company's sso and microsoft entra id, whichever the server offers */
 export const SignIn = () => {
   const [offered, setOffered] = useState<Methods | undefined>()
-  const [busy, setBusy] = useState<"github" | "sso" | undefined>()
+  const [busy, setBusy] = useState<Provider | undefined>()
   // read once: the provider's ?error=… is taken off the url
   const [error, setError] = useState<string | null>(() => takeSignInError())
 
@@ -236,7 +244,7 @@ export const SignIn = () => {
       .catch(() => setError("couldn't reach mekiki"))
   }, [])
 
-  const go = async (provider: "github" | "sso") => {
+  const go = async (provider: Provider) => {
     setBusy(provider)
     setError(null)
     const refused = await signInWith(provider).catch(() => "couldn't reach mekiki")
@@ -246,6 +254,13 @@ export const SignIn = () => {
       setError(refused)
     }
   }
+
+  // the first one offered is the primary button, the rest secondary
+  const buttons = [
+    offered?.microsoft && { provider: "microsoft" as const, label: "Continue with Microsoft", icon: <MicrosoftLogo /> },
+    offered?.sso && { provider: "sso" as const, label: `Continue with ${offered.sso.name}`, icon: <Icon icon={IdCardIcon} /> },
+    offered?.github && { provider: "github" as const, label: "Continue with GitHub", icon: <Icon icon={GithubIcon} /> },
+  ].filter((b) => !!b)
 
   return (
     <LayerCard className="mx-auto w-full max-w-md">
@@ -260,22 +275,18 @@ export const SignIn = () => {
               This mekiki is for its team only. Sign in with the account it knows you by.
             </Text>
           </div>
-          {offered?.sso && (
-            <Button variant="primary" icon={<Icon icon={IdCardIcon} />} loading={busy === "sso"} disabled={busy !== undefined} onClick={() => go("sso")}>
-              Continue with {offered.sso.name}
-            </Button>
-          )}
-          {offered?.github && (
+          {buttons.map((b, n) => (
             <Button
-              variant={offered.sso ? "secondary" : "primary"}
-              icon={<Icon icon={GithubIcon} />}
-              loading={busy === "github"}
+              key={b.provider}
+              variant={n === 0 ? "primary" : "secondary"}
+              icon={b.icon}
+              loading={busy === b.provider}
               disabled={busy !== undefined}
-              onClick={() => go("github")}
+              onClick={() => go(b.provider)}
             >
-              Continue with GitHub
+              {b.label}
             </Button>
-          )}
+          ))}
           {error && (
             <Text variant="error" size="sm">
               {error}

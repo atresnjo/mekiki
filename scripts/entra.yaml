@@ -1,0 +1,17 @@
+# a fake microsoft entra id for development (`bun dev:entra`, vercel's emulate): one tenant, mekiki's
+# app registration, and two people: alice is at MEKIKI_ENTRA_DOMAIN (mekiki.test), eve isn't
+microsoft:
+  users:
+    - email: alice@mekiki.test
+      name: Alice Example
+      tenant_id: 00000000-0000-0000-0000-0000000e1d7a
+    - email: eve@outsider.test
+      name: Eve Outsider
+      tenant_id: 00000000-0000-0000-0000-0000000e1d7a
+  oauth_clients:
+    - client_id: mekiki-dev
+      client_secret: mekiki-dev-secret
+      name: mekiki (development)
+      tenant_id: 00000000-0000-0000-0000-0000000e1d7a
+      redirect_uris:
+        - http://localhost:7421/api/auth/sso/callback/microsoft

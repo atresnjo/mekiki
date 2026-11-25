@@ -1,0 +1,33 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "5625656f-9b30-45ab-a463-dbda64cc0e61",
+  "prevIds": ["61b3288f-4a70-4348-b347-9bd2cd20050c"],
+  "footprints": [
+    {
+      "statementType": "add_column",
+      "statementTarget": ["column", "public", "sso_providers", "domain_verified"],
+      "writes": ["s|col|public.sso_providers.domain_verified", "n|col|public.sso_providers.domain_verified", "e|col|public.sso_providers.domain_verified"],
+      "reads": ["n|tbl|public.sso_providers", "n|sch|public"]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "sso_providers",
+        "name": "domain_verified",
+        "type": "boolean",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    }
+  ]
+}

@@ -101,7 +101,7 @@ export const fakeAuth = (enabled: boolean) =>
     Auth.Service,
     Auth.Service.of({
       enabled,
-      methods: { github: enabled, sso: null },
+      methods: { github: enabled, sso: null, microsoft: false },
       handler: () => Effect.succeed(new Response(null, { status: 404 })),
       user: (headers) =>
         Effect.succeed(

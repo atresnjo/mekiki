@@ -133,4 +133,6 @@ export const ssoProviders = snakeCase.table("sso_providers", {
   providerId: text().notNull().unique(),
   organizationId: text(),
   domain: text().notNull(),
+  /** the sso plugin's domain verification: mekiki's providers come from its config, verified there */
+  domainVerified: boolean(),
 })

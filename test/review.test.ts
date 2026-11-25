@@ -167,6 +167,7 @@ test("child processes get an allowlist of mekiki's environment: no secrets, no a
     GITHUB_CLIENT_SECRET: "oauth",
     BETTER_AUTH_SECRET: "auth",
     MEKIKI_SSO_CLIENT_SECRET: "sso",
+    MEKIKI_ENTRA_CLIENT_SECRET: "entra",
     ANTHROPIC_API_KEY: "sk-ant-api",
     OPENAI_API_KEY: "sk-openai",
   }

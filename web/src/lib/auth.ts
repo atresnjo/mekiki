@@ -1,5 +1,5 @@
-// signing in: better auth's browser client, against /api/auth on this origin. github and the
-// company's sso both leave the page and come back to "/", with ?error=… when it didn't work
+// signing in: better auth's browser client, against /api/auth on this origin. github, the company's
+// sso and microsoft entra id all leave the page and come back to "/", with ?error=… when it didn't work
 import { ssoClient } from "@better-auth/sso/client"
 import { createAuthClient } from "better-auth/client"
 import { forgetShapes } from "skullet"
@@ -11,7 +11,10 @@ export interface Methods {
   readonly enabled: boolean
   readonly github: boolean
   readonly sso: { readonly name: string; readonly kind: "oidc" | "saml" } | null
+  readonly microsoft: boolean
 }
+
+export type Provider = "github" | "sso" | "microsoft"
 
 export const methods = (): Promise<Methods> => fetch("/api/sign-in").then((r) => r.json() as Promise<Methods>)
 
@@ -19,8 +22,10 @@ export const methods = (): Promise<Methods> => fetch("/api/sign-in").then((r) =>
 const back = { callbackURL: "/", errorCallbackURL: "/" }
 
 /** null once the browser is on its way to the provider, else why it isn't */
-export const signInWith = async (provider: "github" | "sso"): Promise<string | null> => {
-  const result = provider === "github" ? await client.signIn.social({ provider: "github", ...back }) : await client.signIn.sso({ providerId: "sso", ...back })
+export const signInWith = async (provider: Provider): Promise<string | null> => {
+  // the sso and microsoft are both better auth's sso plugin, told apart by their provider id
+  const result =
+    provider === "github" ? await client.signIn.social({ provider: "github", ...back }) : await client.signIn.sso({ providerId: provider, ...back })
   return result.error ? (result.error.message ?? `sign-in failed (${result.error.status})`) : null
 }
 

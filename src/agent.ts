@@ -1,8 +1,9 @@
-// the reviewers: `claude -p` and `codex exec`, each running on its own subscription login, and
-// `api`: a model on an API key (openai, anthropic, google or an openai-compatible gateway) through
-// the AI SDK, reading the checkout with mekiki's own read-only tools (sandbox.ts).
-// a cli call is one short-lived process with no MCP servers, no project context and our own short
-// system prompt; an api call is one generateText loop. either way: a single structured answer
+// the reviewers: claude code (through the claude agent sdk) and `codex exec`, each running on its own
+// subscription login, and `api`: a model on an API key (openai, anthropic, google or an openai-compatible
+// gateway) through the AI SDK, reading the checkout with mekiki's own read-only tools (sandbox.ts).
+// a cli call is one short-lived session or process with no MCP servers, no project context and our own
+// short system prompt; an api call is one generateText loop. either way: a single structured answer
+import { type Options as ClaudeOptions, query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
@@ -104,7 +105,8 @@ export interface ApiOptions {
 export interface Options {
   /** the claude and codex clis are offered (the default): off, only the api agent is */
   readonly clis?: boolean | undefined
-  readonly claudeBin: string
+  /** a `claude` to run: none, the claude code the agent sdk ships */
+  readonly claudeBin: Option.Option<string>
   readonly codexBin: string
   readonly timeout: number
   readonly api: ApiOptions
@@ -165,7 +167,8 @@ const close = (node: unknown): unknown => {
 }
 
 /** the output schema both CLIs are handed: every key required */
-const reviewJsonSchema = JSON.stringify(close(Schema.toJsonSchemaDocument(ChunkReview).schema))
+const reviewSchema = close(Schema.toJsonSchemaDocument(ChunkReview).schema) as Record<string, unknown>
+const reviewJsonSchema = JSON.stringify(reviewSchema)
 
 /** an effect schema as the AI SDK takes one: its json schema for the model, and the schema itself to check what comes back */
 const sdkSchema = <S extends Schema.Codec<unknown, unknown>>(schema: S, closed: boolean) => {
@@ -179,16 +182,8 @@ const sdkSchema = <S extends Schema.Codec<unknown, unknown>>(schema: S, closed: 
   })
 }
 
-const ClaudeEnvelope = Schema.Struct({
-  is_error: Schema.optional(Schema.Boolean),
-  result: Schema.optional(Schema.String),
-  structured_output: Schema.optional(Schema.Unknown),
-  // read on their own: a change in how claude reports them mustn't fail the review
-  usage: Schema.optional(Schema.Unknown),
-  total_cost_usd: Schema.optional(Schema.Unknown),
-})
-
-/** claude's input_tokens leave out what was read from and written to the cache */
+/** claude's usage is read on its own: a change in how claude reports it mustn't fail the review.
+ * its input_tokens leave out what was read from and written to the cache */
 const ClaudeUsage = Schema.Struct({
   input_tokens: Schema.Finite,
   cache_creation_input_tokens: Schema.optional(Schema.NullOr(Schema.Finite)),
@@ -222,9 +217,16 @@ const ListInput = Schema.Struct({
   glob: Schema.optional(Schema.String).annotate({ description: "only files matching this, e.g. **/*.go" }),
 })
 
-const decodeClaudeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ClaudeEnvelope))
 const decodeReview = Schema.decodeUnknownEffect(ChunkReview)
 const decodeReviewJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChunkReview))
+
+/** the tools claude code gets when it has the checkout: read and search it, nothing else */
+const CLAUDE_TOOLS = ["Read", "Grep", "Glob"]
+
+/** an input that never ends: the session stays up for control requests without starting a turn */
+const idle: AsyncIterable<SDKUserMessage> = {
+  [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
+}
 
 /** the model a provider serves: a gateway speaks chat completions, which every openai-compatible server has */
 export const connect =
@@ -321,39 +323,72 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
       Effect.scoped,
     )
 
+  /** what every claude session gets: no settings, hooks, plugins or CLAUDE.md from disk, and nothing kept */
+  const claudeBase = (cwd: string, stderr?: (data: string) => void): ClaudeOptions => ({
+    ...Option.match(options.claudeBin, { onNone: () => ({}), onSome: (path) => ({ pathToClaudeCodeExecutable: path }) }),
+    // replaces the environment: the agent's allowlist, and no api key (it would beat the subscription login)
+    env: { ...env, CLAUDE_AGENT_SDK_CLIENT_APP: "mekiki" },
+    cwd,
+    settingSources: [],
+    persistSession: false,
+    strictMcpConfig: true,
+    ...(stderr ? { stderr } : {}),
+  })
+
+  /** why a claude session failed: the sdk's words, and what claude code wrote to stderr if they leave it out */
+  const claudeFailure = (error: unknown, stderr: ReadonlyArray<string>) => {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/native binary not found|ENOENT/i.test(message)) return fail("claude")(`couldn't start claude: ${message}`)
+    const written = stderr.join("").trim()
+    const detail = written && !message.includes(written) ? `${message}\n${written}` : message
+    return fail("claude")(`claude failed: ${detail.slice(-2000)}`)
+  }
+
+  /** one claude code session, closed (its process with it) when the scope ends: on an answer, an error or the deadline */
+  const claudeSession = (prompt: string | AsyncIterable<SDKUserMessage>, sessionOptions: ClaudeOptions, stderr: ReadonlyArray<string>) =>
+    Effect.acquireRelease(Effect.try({ try: () => query({ prompt, options: sessionOptions }), catch: (error) => claudeFailure(error, stderr) }), (session) =>
+      Effect.sync(() => session.close()),
+    )
+
   const claude = (request: Request) =>
     inTempDir(request.agent, (dir) =>
       Effect.gen(function* () {
-        const stdout = yield* run(
-          "claude",
-          ChildProcess.make(
-            options.claudeBin,
-            [
-              "-p",
-              "--output-format",
-              "json",
-              "--json-schema",
-              reviewJsonSchema,
-              ...(request.model ? ["--model", request.model] : []),
-              "--effort",
-              request.effort,
-              "--system-prompt",
-              request.system,
-              // with the code: read and search it, nothing else. --restricted keeps the file tools
-              // inside the checkout (symlinks included) and ignores any settings the repository ships
-              ...(request.code ? ["--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob", "--restricted"] : ["--tools", ""]),
-              "--strict-mcp-config",
-              "--safe-mode",
-              "--no-session-persistence",
-            ],
-            { cwd: request.code ?? dir, env, stdin: Stream.encodeText(Stream.make(request.prompt)) },
-          ),
+        const stderr: Array<string> = []
+        const session = yield* claudeSession(
+          request.prompt,
+          {
+            ...claudeBase(request.code ?? dir, (data) => stderr.push(data)),
+            systemPrompt: request.system,
+            outputFormat: { type: "json_schema", schema: reviewSchema },
+            ...(request.model ? { model: request.model } : {}),
+            effort: request.effort,
+            // anything not allowed below is refused, never asked about
+            permissionMode: "dontAsk",
+            tools: request.code ? CLAUDE_TOOLS : [],
+            allowedTools: request.code ? CLAUDE_TOOLS : [],
+            // --restricted keeps the file tools inside the checkout (symlinks included) and ignores any
+            // settings the repository ships
+            extraArgs: request.code ? { restricted: null, "safe-mode": null } : { "safe-mode": null },
+          },
+          stderr,
         )
-        const envelope = yield* decodeClaudeEnvelope(stdout).pipe(Effect.mapError(() => fail("claude")(`unexpected output: ${stdout.slice(0, 500)}`)))
-        if (envelope.is_error || envelope.structured_output === undefined) return yield* fail("claude")(envelope.result ?? "no structured output")
-        const review = yield* decodeReview(envelope.structured_output).pipe(Effect.mapError((e) => fail("claude")(`invalid review: ${e.message}`)))
+        // read without `return`: on the deadline the stream would wait for it behind the pending read.
+        // closing the session (above) is what ends it
+        const iterator = session[Symbol.asyncIterator]()
+        const reads: AsyncIterable<SDKMessage> = { [Symbol.asyncIterator]: () => ({ next: () => iterator.next() }) }
+        const result = yield* Stream.fromAsyncIterable(reads, (error) => claudeFailure(error, stderr)).pipe(
+          // the sdk throws right after an error result: stopping at the result keeps its reason
+          Stream.takeUntil((message) => message.type === "result"),
+          Stream.runLast,
+          Effect.map(Option.filter((message) => message.type === "result")),
+        )
+        if (Option.isNone(result)) return yield* fail("claude")(stderr.join("").trim().slice(-2000) || "claude ended without an answer")
+        const r = result.value
+        if (r.subtype !== "success" || r.is_error) return yield* fail("claude")(r.subtype === "success" ? r.result : r.errors.join("; ") || r.subtype)
+        if (r.structured_output === undefined) return yield* fail("claude")(r.result || "no structured output")
+        const review = yield* decodeReview(r.structured_output).pipe(Effect.mapError((e) => fail("claude")(`invalid review: ${e.message}`)))
         // claude code prices its own calls: its figure, over the table's
-        const spent = Option.map(decodeClaudeUsage(envelope.usage), (u) =>
+        const spent = Option.map(decodeClaudeUsage(r.usage), (u) =>
           usage(
             request.model,
             {
@@ -361,12 +396,26 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
               cachedInputTokens: u.cache_read_input_tokens ?? 0,
               outputTokens: u.output_tokens,
             },
-            Option.getOrUndefined(decodeCost(envelope.total_cost_usd)),
+            Option.getOrUndefined(decodeCost(r.total_cost_usd)),
           ),
         )
         return { review, usage: Option.getOrUndefined(spent) }
       }),
     )
+
+  /** claude code's version, from a session that never starts a turn: it costs nothing */
+  const claudeCheck = inTempDir("claude", (dir) =>
+    Effect.gen(function* () {
+      const session = yield* claudeSession(idle, claudeBase(dir), [])
+      const init = yield* Effect.tryPromise({ try: () => session.initializationResult(), catch: (error) => claudeFailure(error, []) })
+      // a login has an email; a token from `claude setup-token` only says where it came from
+      const account = init.account
+      if (account.email === undefined && (account.tokenSource === undefined || account.tokenSource === "none")) {
+        return yield* fail("claude")("claude isn't logged in")
+      }
+      return `${init.claude_code_version ?? "unknown"} (Claude Code)`
+    }),
+  )
 
   const codex = (request: Request) =>
     inTempDir(request.agent, (dir) =>
@@ -519,13 +568,15 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
       return `${Option.getOrElse(options.api.provider, () => "openai")} ${options.api.model}`
     }
     if (!offered.includes(agent)) return yield* off(agent)
-    const bin = agent === "claude" ? options.claudeBin : options.codexBin
-    const [version, status] = yield* Effect.all(
+    // claude code starts slower than codex: a cold start alone can take seconds
+    if (agent === "claude")
+      return yield* claudeCheck.pipe(
+        Effect.timeoutOrElse({ duration: "30 seconds", orElse: () => Effect.fail(fail("claude")("claude login check timed out")) }),
+      )
+    const [version] = yield* Effect.all(
       [
-        run(agent, ChildProcess.make(bin, ["--version"], { env })),
-        run(agent, ChildProcess.make(bin, agent === "claude" ? ["auth", "status"] : ["login", "status"], { env })).pipe(
-          Effect.mapError(() => fail(agent)(`${agent} isn't logged in`)),
-        ),
+        run(agent, ChildProcess.make(options.codexBin, ["--version"], { env })),
+        run(agent, ChildProcess.make(options.codexBin, ["login", "status"], { env })).pipe(Effect.mapError(() => fail(agent)(`${agent} isn't logged in`))),
       ],
       { concurrency: "unbounded" },
     ).pipe(
@@ -533,8 +584,6 @@ export const make = Effect.fn("Agent.make")(function* (options: Options, connect
       Effect.mapError(() => fail(agent)(`${agent} login check failed or timed out`)),
       Effect.scoped,
     )
-    // claude answers in json, and exits 0 either way in some versions: its word over the exit code
-    if (agent === "claude" && /"loggedIn":\s*false/.test(status)) return yield* fail(agent)("claude isn't logged in")
     return version.trim()
   })
 

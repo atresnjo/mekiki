@@ -6,13 +6,16 @@ import { drizzle } from "drizzle-orm/pglite"
 import { migrate } from "drizzle-orm/pglite/migrator"
 import { Effect, Layer, Option } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { allowedByEmail, Auth, emailListed, LOCAL, problems, SSO_ID } from "../src/auth.ts"
+import { createEmulator } from "emulate"
+import { allowedByEmail, Auth, emailListed, ENTRA_ID, LOCAL, problems, SSO_ID } from "../src/auth.ts"
 import { Database } from "../src/database.ts"
 import { authAccounts, authSessions, users } from "../src/schema.ts"
 import { configFrom } from "./support.ts"
 
 const SECRET = "a-test-secret-that-is-long-enough-to-sign"
 const GITHUB = { GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret" }
+const TENANT = "00000000-0000-0000-0000-000000000001"
+const ENTRA = { MEKIKI_ENTRA_TENANT_ID: TENANT, MEKIKI_ENTRA_CLIENT_ID: "client", MEKIKI_ENTRA_CLIENT_SECRET: "secret", MEKIKI_ENTRA_DOMAIN: "acme.com" }
 const PRODUCTION = {
   MEKIKI_ENV: "production",
   BETTER_AUTH_URL: "https://mekiki.acme.com",
@@ -35,6 +38,11 @@ test("production doesn't start until someone can sign in, safely", () => {
   const oidc = { MEKIKI_SSO_ISSUER: "https://acme.okta.com", MEKIKI_SSO_CLIENT_ID: "c", MEKIKI_SSO_CLIENT_SECRET: "s" }
   expect(problems(configFrom({ ...PRODUCTION, ...oidc }))).toEqual([expect.stringContaining("MEKIKI_SSO_DOMAIN")])
   expect(problems(configFrom({ ...PRODUCTION, ...oidc, MEKIKI_SSO_DOMAIN: "acme.com" }))).toEqual([])
+  // microsoft entra id: all three parts, the company's domain, and its own tenant
+  expect(problems(configFrom({ ...PRODUCTION, MEKIKI_ENTRA_TENANT_ID: TENANT }))).toEqual([expect.stringContaining("MEKIKI_ENTRA_CLIENT_ID")])
+  expect(problems(configFrom({ ...PRODUCTION, ...ENTRA, MEKIKI_ENTRA_DOMAIN: "" }))).toEqual([expect.stringContaining("MEKIKI_ENTRA_DOMAIN")])
+  expect(problems(configFrom({ ...PRODUCTION, ...ENTRA, MEKIKI_ENTRA_TENANT_ID: "common" }))).toEqual([expect.stringContaining("tenant")])
+  expect(problems(configFrom({ ...PRODUCTION, ...ENTRA, ...oidc, MEKIKI_SSO_DOMAIN: "acme.com" }))).toEqual([])
   // development on this machine may run without anyone signing in
   expect(problems(configFrom({}))).toEqual([])
 })
@@ -57,6 +65,16 @@ test("github's address must be verified; the company's sso vouches for its own",
   // the sso's domain lets in only who came through the sso
   expect(allowedByEmail(auth, { email: "b@sso.acme.com", emailVerified: true, providers: ["github"] })).toBe(false)
   expect(allowedByEmail(auth, { email: "x@gmail.com", emailVerified: true, providers: ["github", SSO_ID] })).toBe(false)
+})
+
+test("entra vouches for its own addresses, and its domain lets in only who came through it", () => {
+  const { auth } = configFrom({ ...PRODUCTION, ...ENTRA, MEKIKI_ENTRA_DOMAIN: "corp.acme.com", MEKIKI_SSO_DOMAIN: "sso.acme.com" })
+  expect(allowedByEmail(auth, { email: "a@corp.acme.com", emailVerified: false, providers: [ENTRA_ID] })).toBe(true)
+  expect(allowedByEmail(auth, { email: "a@acme.com", emailVerified: false, providers: [ENTRA_ID] })).toBe(true)
+  expect(allowedByEmail(auth, { email: "a@corp.acme.com", emailVerified: true, providers: ["github"] })).toBe(false)
+  // each provider's domain is its own: the sso's doesn't let in someone entra signed in, nor the other way round
+  expect(allowedByEmail(auth, { email: "a@sso.acme.com", emailVerified: false, providers: [ENTRA_ID] })).toBe(false)
+  expect(allowedByEmail(auth, { email: "a@corp.acme.com", emailVerified: false, providers: [SSO_ID] })).toBe(false)
 })
 
 /** better auth on a fresh in-process postgres, with the real migrations */
@@ -139,4 +157,47 @@ test("better auth answers under /api/auth, and offers github", async () => {
   expect(response.status).toBe(200)
   const body = (await response.json()) as { url: string }
   expect(body.url).toStartWith("https://github.com/login/oauth/authorize")
+})
+
+test("microsoft sends people to entra's own tenant", async () => {
+  // a fake entra (vercel's emulate): the same discovery, authorize endpoint and issuer as the real one
+  const entra = await createEmulator({
+    service: "microsoft",
+    port: 0,
+    seed: {
+      microsoft: {
+        users: [{ email: "alice@acme.com", name: "Alice", tenant_id: TENANT }],
+        oauth_clients: [
+          {
+            client_id: "client",
+            client_secret: "secret",
+            name: "mekiki",
+            redirect_uris: ["http://localhost:7421/api/auth/sso/callback/microsoft"],
+            tenant_id: TENANT,
+          },
+        ],
+      },
+    },
+  })
+  try {
+    const response = await withAuth({ ...env, ...ENTRA, MEKIKI_ENTRA_AUTHORITY: entra.url }, (auth) =>
+      Effect.runPromise(
+        auth.handler(
+          new Request("http://localhost:7421/api/auth/sign-in/sso", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: "http://localhost:7421", "x-mekiki-client-ip": "1.2.3.4" },
+            body: JSON.stringify({ providerId: ENTRA_ID, callbackURL: "/" }),
+          }),
+        ),
+      ),
+    )
+    expect(response.status).toBe(200)
+    const url = new URL(((await response.json()) as { url: string }).url)
+    expect(`${url.origin}${url.pathname}`).toBe(`${entra.url}/oauth2/v2.0/authorize`)
+    expect(url.searchParams.get("client_id")).toBe("client")
+    expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:7421/api/auth/sso/callback/microsoft")
+    expect(url.searchParams.get("code_challenge_method")).toBe("S256")
+  } finally {
+    await entra.close()
+  }
 })
