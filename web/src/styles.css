@@ -10,3 +10,406 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/* the mebius charts kit (charts-theme): its tokens as tailwind colours, scoped to the chart cards (data-charts), so
+   the dashboard's own colours stay kumo's. the dark values aren't in the kit: they follow the dashboard's dark mode */
+@theme inline {
+  --color-surface-white: var(--surface-white);
+  --color-surface-base: var(--surface-base);
+  --color-surface-disable: var(--surface-disable);
+  --color-surface-soft: var(--surface-soft);
+  --color-surface-subdued: var(--surface-subdued);
+  --color-surface-loud: var(--surface-loud);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-popup: var(--surface-popup);
+  --color-fg-loud: var(--fg-loud);
+  --color-fg-normal: var(--fg-normal);
+  --color-fg-soft: var(--fg-soft);
+  --color-fg-disable: var(--fg-disable);
+  --color-fg-white: var(--fg-white);
+  --color-border-soft: var(--border-soft);
+  --color-border-sub: var(--border-sub);
+  --color-border-white: var(--border-white);
+  --color-border-loud: var(--border-loud);
+  --color-border-normal: var(--border-normal);
+  --color-icon-loud: var(--icon-loud);
+  --color-icon-normal: var(--icon-normal);
+  --color-icon-soft: var(--icon-soft);
+  --color-icon-disable: var(--icon-disable);
+  --color-primary-blue-50: var(--primary-blue-50);
+  --color-primary-blue-100: var(--primary-blue-100);
+  --color-primary-blue-200: var(--primary-blue-200);
+  --color-primary-blue-300: var(--primary-blue-300);
+  --color-primary-blue-400: var(--primary-blue-400);
+  --color-primary-blue-500: var(--primary-blue-500);
+  --color-primary-blue-600: var(--primary-blue-600);
+  --color-primary-blue-700: var(--primary-blue-700);
+  --color-primary-blue-800: var(--primary-blue-800);
+  --color-primary-green-50: var(--primary-green-50);
+  --color-primary-green-100: var(--primary-green-100);
+  --color-primary-green-200: var(--primary-green-200);
+  --color-primary-green-300: var(--primary-green-300);
+  --color-primary-green-400: var(--primary-green-400);
+  --color-primary-green-500: var(--primary-green-500);
+  --color-primary-green-600: var(--primary-green-600);
+  --color-primary-green-700: var(--primary-green-700);
+  --color-primary-green-800: var(--primary-green-800);
+  --color-primary-green-900: var(--primary-green-900);
+  --color-primary-orange-50: var(--primary-orange-50);
+  --color-primary-orange-100: var(--primary-orange-100);
+  --color-primary-orange-200: var(--primary-orange-200);
+  --color-primary-orange-300: var(--primary-orange-300);
+  --color-primary-orange-400: var(--primary-orange-400);
+  --color-primary-orange-500: var(--primary-orange-500);
+  --color-primary-orange-600: var(--primary-orange-600);
+  --color-primary-orange-700: var(--primary-orange-700);
+  --color-primary-purple-50: var(--primary-purple-50);
+  --color-primary-purple-100: var(--primary-purple-100);
+  --color-primary-purple-200: var(--primary-purple-200);
+  --color-primary-purple-300: var(--primary-purple-300);
+  --color-primary-purple-400: var(--primary-purple-400);
+  --color-primary-purple-500: var(--primary-purple-500);
+  --color-primary-purple-600: var(--primary-purple-600);
+  --color-primary-purple-700: var(--primary-purple-700);
+  --color-primary-yellow-50: var(--primary-yellow-50);
+  --color-primary-yellow-100: var(--primary-yellow-100);
+  --color-primary-yellow-300: var(--primary-yellow-300);
+  --color-primary-yellow-400: var(--primary-yellow-400);
+  --color-primary-yellow-500: var(--primary-yellow-500);
+  --color-error-50: var(--error-50);
+  --color-error-100: var(--error-100);
+  --color-error-200: var(--error-200);
+  --color-error-500: var(--error-500);
+  --color-error-600: var(--error-600);
+  --color-accent-light-blue-500: var(--accent-light-blue-500);
+  --color-accent-light-blue-700: var(--accent-light-blue-700);
+  --font-rounded: var(--font-charts-rounded);
+}
+
+:where(:root),
+[data-charts] {
+  --font-charts-rounded: "SF Pro Rounded", ui-rounded, system-ui, sans-serif;
+  --chart-ring: #ececec;
+  --surface-white: #ffffff;
+  --surface-base: #f0f0f0;
+  --surface-disable: #f7f7f7;
+  --surface-soft: #ebebeb;
+  --surface-subdued: #d1d1d1;
+  --surface-loud: #171717;
+  --surface-muted: #262626;
+  --surface-popup: #1c1c1c;
+  --fg-loud: #171717;
+  --fg-normal: #5c5c5c;
+  --fg-soft: #a3a3a3;
+  --fg-disable: #d1d1d1;
+  --fg-white: #ffffff;
+  --border-soft: #ebebeb;
+  --border-sub: #d1d1d1;
+  --border-white: #ffffff;
+  --border-loud: #171717;
+  --border-normal: #2f2d2d;
+  --icon-loud: #171717;
+  --icon-normal: #5c5c5c;
+  --icon-soft: #a3a3a3;
+  --icon-disable: #d1d1d1;
+  --primary-blue-50: #e6f2fe;
+  --primary-blue-100: #b3d7fc;
+  --primary-blue-200: #8ec3fb;
+  --primary-blue-300: #5aa8f9;
+  --primary-blue-400: #3a97f8;
+  --primary-blue-500: #097df6;
+  --primary-blue-600: #0872e0;
+  --primary-blue-700: #0659af;
+  --primary-blue-800: #054587;
+  --primary-green-50: #e7f7ed;
+  --primary-green-100: #b6e5c8;
+  --primary-green-200: #92d8ad;
+  --primary-green-300: #60c687;
+  --primary-green-400: #41bb70;
+  --primary-green-500: #12aa4c;
+  --primary-green-600: #109b45;
+  --primary-green-700: #0d7936;
+  --primary-green-800: #0a5e2a;
+  --primary-green-900: #084720;
+  --primary-orange-50: #fff1e8;
+  --primary-orange-100: #fdd4b8;
+  --primary-orange-200: #fdbf95;
+  --primary-orange-300: #fca165;
+  --primary-orange-400: #fb8f47;
+  --primary-orange-500: #fa7319;
+  --primary-orange-600: #e46917;
+  --primary-orange-700: #b25212;
+  --primary-purple-50: #f6eaff;
+  --primary-purple-100: #e2beff;
+  --primary-purple-200: #d49eff;
+  --primary-purple-300: #c172ff;
+  --primary-purple-400: #b557ff;
+  --primary-purple-500: #a22dff;
+  --primary-purple-600: #9329e8;
+  --primary-purple-700: #7320b5;
+  --primary-yellow-50: #fff9ec;
+  --primary-yellow-100: #fdebc3;
+  --primary-yellow-300: #fcd37e;
+  --primary-yellow-400: #fbcb65;
+  --primary-yellow-500: #fabe3e;
+  --error-50: #feebea;
+  --error-100: #fdc2bd;
+  --error-200: #fca59d;
+  --error-500: #f93b29;
+  --error-600: #e33625;
+  --accent-light-blue-500: #54d2f9;
+  --accent-light-blue-700: #3c95b1;
+}
+
+[data-mode="dark"] [data-charts],
+[data-mode="dark"][data-charts] {
+  --surface-white: #171717;
+  --surface-base: #262626;
+  --surface-disable: #1f1f1f;
+  --surface-soft: #2a2a2a;
+  --surface-subdued: #3d3d3d;
+  --surface-loud: #2e2e2e;
+  --surface-muted: #404040;
+  --surface-popup: #262626;
+  --fg-loud: #f5f5f5;
+  --fg-normal: #b5b5b5;
+  --fg-soft: #808080;
+  --fg-disable: #a3a3a3;
+  --border-soft: #2e2e2e;
+  --border-sub: #404040;
+  --border-loud: #f5f5f5;
+  --border-normal: #d4d4d4;
+  --icon-loud: #f5f5f5;
+  --icon-normal: #b5b5b5;
+  --icon-soft: #808080;
+  --icon-disable: #525252;
+  --primary-green-100: #1d4a2e;
+  --primary-green-200: #256b40;
+  --primary-purple-50: #2a1840;
+  --primary-purple-100: #4a2a6e;
+  --primary-orange-100: #5a2e12;
+  --primary-orange-200: #7a3f18;
+  --error-100: #5c1d17;
+  --chart-ring: #333333;
+}
+
+@utility typo-label-01-regular {
+  font-family: var(--font-charts-rounded);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+@utility typo-label-01-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-label-01-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-label-02-regular {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+@utility typo-label-02-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-label-02-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-label-03-regular {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+@utility typo-label-03-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-label-03-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-label-04-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-label-04-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-01-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-heading-01-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-02-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-03-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-04-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 32px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-05-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 36px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-heading-06-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 40px;
+  line-height: 1;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-body-02-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-body-03-regular {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+@utility typo-body-03-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-body-03-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-body-04-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 18px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-description-01-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 12px;
+  line-height: 1.32;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-description-02-medium {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1.32;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+@utility typo-description-02-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 14px;
+  line-height: 1.32;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+@utility typo-description-03-semibold {
+  font-family: var(--font-charts-rounded);
+  font-size: 16px;
+  line-height: 1.32;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+/* text boxes rounded up to whole pixels, like Figma's hug width */
+@utility hug-w {
+  width: calc-size(fit-content, round(up, size, 1px));
+}

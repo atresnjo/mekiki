@@ -21,7 +21,7 @@ export default defineConfig({
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
   server: { port: 7421, proxy, allowedHosts },
   preview: { port: 7421, proxy, allowedHosts },
-  // the charts chunk is echarts (~650 kB, ~220 kB compressed): loaded lazily after the page and
-  // cached for good (hashed name, immutable), so it isn't worth splitting further
-  build: { chunkSizeWarningLimit: 700 },
+  // the largest chunks are the ui libraries (~450 kB, ~140 kB compressed); the overview's charts load lazily after the
+  // page. all are cached for good (hashed names, immutable), so they aren't worth splitting further
+  build: { chunkSizeWarningLimit: 500 },
 })
