@@ -27,14 +27,14 @@ chmod +x scripts/*.sh
 
 All in `.env` (mode 600, owned by root or the deploy user; never committed):
 
-|                                                                       |                                                                            |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `POSTGRES_PASSWORD`                                                   | `openssl rand -hex 24`                                                     |
-| `BETTER_AUTH_SECRET`                                                  | `openssl rand -base64 32`. Changing it signs everyone out                  |
-| `GITHUB_WEBHOOK_SECRET`                                               | `openssl rand -hex 32`                                                     |
-| `GITHUB_APP_PRIVATE_KEY_FILE`                                         | the app's `.pem`, mounted into the container (or `GITHUB_APP_PRIVATE_KEY`) |
-| `GITHUB_CLIENT_SECRET`, `MEKIKI_SSO_CLIENT_SECRET`                    | from the provider you sign in with                                         |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` | the api agent's, for `MEKIKI_API_PROVIDER`: from the provider's console    |
+|                                                                                  |                                                                            |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `POSTGRES_PASSWORD`                                                              | `openssl rand -hex 24`                                                     |
+| `BETTER_AUTH_SECRET`                                                             | `openssl rand -base64 32`. Changing it signs everyone out                  |
+| `GITHUB_WEBHOOK_SECRET`                                                          | `openssl rand -hex 32`                                                     |
+| `GITHUB_APP_PRIVATE_KEY_FILE`                                                    | the app's `.pem`, mounted into the container (or `GITHUB_APP_PRIVATE_KEY`) |
+| `GITHUB_CLIENT_SECRET`, `MEKIKI_SSO_CLIENT_SECRET`, `MEKIKI_ENTRA_CLIENT_SECRET` | from the provider you sign in with                                         |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`            | the api agent's, for `MEKIKI_API_PROVIDER`: from the provider's console    |
 
 git and tar never see any of these: they get an allowlist of the environment (`PATH`, `HOME`, locale, proxy and CA settings), see `src/agent.ts`. An API key is read by mekiki's own process only, for the api agent's requests; it isn't stored, sent to the dashboard or logged.
 
@@ -62,6 +62,9 @@ Who's allowed:
 - `MEKIKI_ALLOWED_EMAILS`: addresses (`alice@acme.com`) and whole domains (`@acme.com`). An address from GitHub counts only when GitHub has verified it.
 - `MEKIKI_ALLOWED_GITHUB_ORGS`: members of these organizations, signing in with GitHub. If the organization restricts OAuth apps, approve mekiki's app for it.
 - `MEKIKI_SSO_DOMAIN`: anyone the company's SSO signs in with an address at that domain.
+- `MEKIKI_ENTRA_DOMAIN`: anyone Microsoft Entra ID signs in with an address at that domain.
+
+GitHub, the SSO and Microsoft can all be on at once; the sign-in page offers each. An address the SSO or Entra vouched for that GitHub also has becomes one account.
 
 ### SSO with OIDC (Okta, Microsoft Entra ID, Google Workspace, Keycloak, Authentik, JumpCloud…)
 
@@ -76,6 +79,25 @@ MEKIKI_SSO_DOMAIN=acme.com
 ```
 
 Assign the application to the people (or group) who should have it. Use a tenant-specific issuer: a shared one (Entra's `common`, plain Google accounts) would let in anyone who can put an address at your domain on an account there. With Google, make the OAuth consent screen _Internal_.
+
+### Microsoft Entra ID
+
+Its own "Continue with Microsoft" button, beside GitHub and the SSO (Entra also works as the generic OIDC SSO above; this is the same, with Microsoft's issuer filled in and a shared tenant refused). In the Entra admin center, **App registrations → New registration**:
+
+- Supported account types: _Accounts in this organizational directory only_ (single tenant).
+- Redirect URI: platform **Web**, `https://<domain>/api/auth/sso/callback/microsoft`.
+- **Certificates & secrets → New client secret**: copy its _Value_. It expires (24 months at most): put the new one in `.env` before it does.
+- **Token configuration → Add optional claim → ID → `email`** (and allow the Microsoft Graph `email` permission it asks for). mekiki knows people by that claim.
+- Optionally, under **Enterprise applications → mekiki → Properties**, set _Assignment required_ and assign the people or group who should have it.
+
+```bash
+MEKIKI_ENTRA_TENANT_ID=…       # Directory (tenant) id, from the app's overview
+MEKIKI_ENTRA_CLIENT_ID=…       # Application (client) id
+MEKIKI_ENTRA_CLIENT_SECRET=…
+MEKIKI_ENTRA_DOMAIN=acme.com
+```
+
+The issuer is `https://login.microsoftonline.com/<tenant id>/v2.0`. A shared tenant (`common`, `organizations`) is refused: it would let in accounts from any tenant. `MEKIKI_ENTRA_AUTHORITY` changes the host, for another cloud (`https://login.microsoftonline.us`) or the fake Entra used while developing (see the README).
 
 ### SSO with SAML
 
@@ -105,7 +127,7 @@ docker compose exec mekiki bun dist/isolation-check.js api  # a hostile pull req
 
 Then, on the test repository:
 
-- [ ] **Sign in** with GitHub and with SSO; an account outside the rules is turned away with "isn't allowed into this mekiki"; signing out works; `curl -X POST https://<domain>/api/rpc` without a cookie answers `Unauthorized`.
+- [ ] **Sign in** with GitHub, with SSO and with Microsoft; an account outside the rules is turned away with "isn't allowed into this mekiki"; signing out works; `curl -X POST https://<domain>/api/rpc` without a cookie answers `Unauthorized`.
 - [ ] **Ask mode:** open a pull request: mekiki's comment appears with three boxes. Tick _Light_: it reviews, comments inline, the panel says what it found.
 - [ ] **Permissions:** from an account with read access only, comment `/mekiki high` and tick a box: nothing starts (the delivery's response in the app's _Advanced_ tab says why). A collaborator's `/mekiki high` starts a review and gets 👀.
 - [ ] **Labels:** add `mekiki:medium`: a review at medium.

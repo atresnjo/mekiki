@@ -19,10 +19,12 @@ function Root() {
     save({ payload: { ...settings, depth }, reactivityKeys: ["settings"] }).then((exit) => report(exit))
   }
 
+  const locked = feed?._tag === "Locked"
   return (
-    <div className="mx-auto flex min-h-screen max-w-7xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-8">
-      <Header status={status} live={feed?._tag === "Live"} signedOut={feed?._tag === "Locked"} />
-      {feed?._tag === "Locked" ? (
+    // signed out: no header, the card alone in the middle
+    <div className={`mx-auto flex min-h-screen max-w-7xl flex-col gap-6 px-4 py-6 sm:px-8 sm:py-8 ${locked ? "justify-center" : ""}`}>
+      {!locked && <Header status={status} live={feed?._tag === "Live"} />}
+      {locked ? (
         <SignIn />
       ) : (
         <>

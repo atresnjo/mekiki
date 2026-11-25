@@ -1,6 +1,6 @@
-// signing in to the dashboard: better auth, with github and/or the company's sso (oidc or saml), its
-// sessions in postgres. who may come in is mekiki's own rule (`allowed`): listed addresses and
-// domains, github organizations, and the sso provider's domain. it's checked when a session starts
+// signing in to the dashboard: better auth, with github, the company's sso (oidc or saml) and/or microsoft
+// entra id, its sessions in postgres. who may come in is mekiki's own rule (`allowed`): listed addresses and
+// domains, github organizations, and the sso's and entra's domains. it's checked when a session starts
 // (a stranger never gets one) and again on every call, so taking someone off the list locks them out.
 //
 // production refuses to start until signing in is set up: see `problems`
@@ -16,8 +16,10 @@ import type { AppConfig } from "./config.ts"
 import { Database } from "./database.ts"
 import { authAccounts, authSessions, authVerifications, ssoProviders, users } from "./schema.ts"
 
-/** the one sso provider's id: its callback is /api/auth/sso/callback/sso (oidc) or /api/auth/sso/saml2/sp/acs/sso (saml) */
+/** the company's sso's id: its callback is /api/auth/sso/callback/sso (oidc) or /api/auth/sso/saml2/sp/acs/sso (saml) */
 export const SSO_ID = "sso"
+/** microsoft entra id's: its redirect uri is /api/auth/sso/callback/microsoft */
+export const ENTRA_ID = "microsoft"
 
 /** the header mekiki tells better auth the client's address in: set from the socket (or a trusted proxy), never the client's own */
 const CLIENT_IP = "x-mekiki-client-ip"
@@ -43,6 +45,7 @@ export interface User {
 export interface Methods {
   readonly github: boolean
   readonly sso: { readonly name: string; readonly kind: "oidc" | "saml" } | null
+  readonly microsoft: boolean
 }
 
 // ---------- the rules, as plain functions ----------
@@ -56,14 +59,21 @@ export const methods = ({ auth }: Pick<AppConfig, "auth">): Methods => {
   const github = Option.isSome(auth.github.clientId) && Option.isSome(auth.github.clientSecret)
   const oidc = Option.isSome(auth.sso.issuer) && Option.isSome(auth.sso.clientId) && Option.isSome(auth.sso.clientSecret)
   const saml = Option.isSome(auth.sso.samlMetadataFile)
-  return { github, sso: oidc || saml ? { name: auth.sso.name, kind: saml ? "saml" : "oidc" } : null }
+  const microsoft = entraParts(auth) === 3
+  return { github, sso: oidc || saml ? { name: auth.sso.name, kind: saml ? "saml" : "oidc" } : null, microsoft }
 }
 
 /** some way to sign in is configured: the dashboard and the api need a session */
 export const enabled = (config: Pick<AppConfig, "auth">) => {
   const m = methods(config)
-  return m.github || m.sso !== null
+  return m.github || m.sso !== null || m.microsoft
 }
+
+const entraParts = ({ entra }: AppConfig["auth"]) =>
+  [Option.isSome(entra.tenantId), Option.isSome(entra.clientId), Option.isSome(entra.clientSecret)].filter(Boolean).length
+
+/** entra's issuer for the tenant: `https://login.microsoftonline.com/<tenant id>/v2.0` */
+export const issuerOf = ({ entra }: AppConfig["auth"]) => `${entra.authority}/${Option.getOrThrow(entra.tenantId)}/v2.0`
 
 /** what's wrong with the sign-in setup: mekiki doesn't start until it's empty */
 export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): ReadonlyArray<string> => {
@@ -76,6 +86,13 @@ export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): Read
   if (oidcParts > 0 && oidcParts < 3) found.push("oidc sso needs MEKIKI_SSO_ISSUER, MEKIKI_SSO_CLIENT_ID and MEKIKI_SSO_CLIENT_SECRET")
   if (oidcParts === 3 && Option.isSome(auth.sso.samlMetadataFile)) found.push("pick one sso: oidc (MEKIKI_SSO_ISSUER…) or saml (MEKIKI_SSO_SAML_METADATA_FILE)")
   if (m.sso && Option.isNone(auth.sso.domain)) found.push("sso needs MEKIKI_SSO_DOMAIN: the company's email domain (acme.com)")
+  const parts = entraParts(auth)
+  if (parts > 0 && parts < 3)
+    found.push("signing in with microsoft entra id needs MEKIKI_ENTRA_TENANT_ID, MEKIKI_ENTRA_CLIENT_ID and MEKIKI_ENTRA_CLIENT_SECRET")
+  if (m.microsoft && Option.isNone(auth.entra.domain)) found.push("microsoft entra id needs MEKIKI_ENTRA_DOMAIN: the company's email domain (acme.com)")
+  if (Option.exists(auth.entra.tenantId, (tenant) => ["common", "organizations", "consumers"].includes(tenant.toLowerCase())))
+    found.push("MEKIKI_ENTRA_TENANT_ID must be your directory (tenant) id: a shared one (common, organizations) lets in accounts from any tenant")
+  if (!URL.parse(auth.entra.authority)) found.push(`MEKIKI_ENTRA_AUTHORITY isn't a url: ${auth.entra.authority}`)
   if (auth.allowedGithubOrgs.length > 0 && !m.github)
     found.push("MEKIKI_ALLOWED_GITHUB_ORGS needs signing in with github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)")
   const url = URL.parse(auth.url)
@@ -83,7 +100,7 @@ export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): Read
   if (!enabled(config)) {
     if (requiresSignIn(config))
       found.push(
-        "mekiki is in production (MEKIKI_ENV=production, or HOST isn't loopback) and nobody could sign in: set up github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET) or sso (MEKIKI_SSO_*)",
+        "mekiki is in production (MEKIKI_ENV=production, or HOST isn't loopback) and nobody could sign in: set up github (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET), sso (MEKIKI_SSO_*) or microsoft entra id (MEKIKI_ENTRA_*)",
       )
     return found
   }
@@ -92,8 +109,8 @@ export const problems = (config: Pick<AppConfig, "auth" | "env" | "host">): Read
     if (secret.length < 32) found.push("BETTER_AUTH_SECRET must be set, 32 characters at least: `openssl rand -base64 32`")
     if (url && url.protocol !== "https:") found.push(`BETTER_AUTH_URL must be https in production: ${auth.url}`)
   }
-  if (auth.allowedEmails.length === 0 && auth.allowedGithubOrgs.length === 0 && Option.isNone(auth.sso.domain))
-    found.push("nobody is allowed in: set MEKIKI_ALLOWED_EMAILS, MEKIKI_ALLOWED_GITHUB_ORGS or MEKIKI_SSO_DOMAIN")
+  if (auth.allowedEmails.length === 0 && auth.allowedGithubOrgs.length === 0 && Option.isNone(auth.sso.domain) && Option.isNone(auth.entra.domain))
+    found.push("nobody is allowed in: set MEKIKI_ALLOWED_EMAILS, MEKIKI_ALLOWED_GITHUB_ORGS, MEKIKI_SSO_DOMAIN or MEKIKI_ENTRA_DOMAIN")
   for (const entry of auth.allowedEmails)
     if (!/^[^@\s]*@[^@\s]+\.[^@\s]+$/.test(entry))
       found.push(`MEKIKI_ALLOWED_EMAILS: "${entry}" is neither an address (alice@acme.com) nor a domain (@acme.com)`)
@@ -119,14 +136,17 @@ export interface Identity {
 }
 
 /**
- * may they in, before asking github about organizations. an address counts when github verified it,
- * or when it came from the company's sso (which mekiki's operator set up, so its word is trusted)
+ * may they in, before asking github about organizations. an address counts when github verified it, or
+ * when it came from the company's sso or entra (which mekiki's operator set up, so their word is trusted).
+ * each one's domain lets in only who came through it
  */
 export const allowedByEmail = (auth: AppConfig["auth"], who: Identity) => {
   const fromSso = who.providers.includes(SSO_ID)
-  const trusted = who.emailVerified || fromSso
+  const fromEntra = who.providers.includes(ENTRA_ID)
+  const trusted = who.emailVerified || fromSso || fromEntra
   if (trusted && emailListed(auth.allowedEmails, who.email)) return true
-  return fromSso && Option.isSome(auth.sso.domain) && domainOf(who.email) === auth.sso.domain.value.toLowerCase()
+  const at = (domain: Option.Option<string>) => Option.exists(domain, (d) => domainOf(who.email) === d.toLowerCase())
+  return (fromSso && at(auth.sso.domain)) || (fromEntra && at(auth.entra.domain))
 }
 
 // ---------- better auth ----------
@@ -150,8 +170,9 @@ const create = (input: {
   const oidc = m.sso?.kind === "oidc"
   const issuer = oidc ? value(auth.sso.issuer).replace(/\/$/, "") : ""
   const discovery = Option.getOrElse(auth.sso.discoveryUrl, () => `${issuer}/.well-known/openid-configuration`)
-  // the idp is fetched from the server (discovery, the token exchange): better auth only goes where it's told it may
-  const idpOrigins = oidc ? [...new Set([new URL(issuer).origin, new URL(discovery).origin])] : []
+  const entraIssuer = m.microsoft ? issuerOf(auth) : ""
+  // the idps are fetched from the server (discovery, the token exchange): better auth only goes where it's told it may
+  const idpOrigins = [...new Set([...(oidc ? [new URL(issuer).origin, new URL(discovery).origin] : []), ...(m.microsoft ? [new URL(entraIssuer).origin] : [])])]
 
   const options: BetterAuthOptions = {
     appName: "mekiki",
@@ -177,8 +198,8 @@ const create = (input: {
     account: {
       // the github token is kept to ask about organization memberships: encrypted with the secret
       encryptOAuthTokens: true,
-      // the company's sso vouches for its addresses: a github account with the same one becomes the same person
-      accountLinking: { enabled: true, trustedProviders: [SSO_ID] },
+      // linking by address: the sso plugin decides for the company's sso and entra (domainVerification below)
+      accountLinking: { enabled: true, trustedProviders: [SSO_ID, ENTRA_ID] },
     },
     // in memory: mekiki is one instance (see the readme)
     rateLimit: { enabled: true, storage: "memory" },
@@ -210,40 +231,65 @@ const create = (input: {
         },
       },
     },
-    plugins: m.sso
-      ? [
-          sso({
-            providersLimit: 0,
-            defaultSSO: [
-              {
-                domain: value(auth.sso.domain),
-                providerId: SSO_ID,
-                ...(oidc
-                  ? {
-                      oidcConfig: {
-                        issuer,
-                        clientId: value(auth.sso.clientId),
-                        clientSecret: secret(auth.sso.clientSecret),
-                        discoveryEndpoint: discovery,
-                        pkce: true,
-                        scopes: ["openid", "email", "profile"],
+    plugins:
+      m.sso || m.microsoft
+        ? [
+            sso({
+              providersLimit: 0,
+              // the providers come from mekiki's own config, domains included, so they count as verified: someone
+              // who signs in through one, at its domain, joins an existing account with that (verified) address,
+              // a github one say. the plugin doesn't go by accountLinking.trustedProviders
+              domainVerification: { enabled: true },
+              defaultSSO: [
+                ...(m.sso
+                  ? [
+                      {
+                        domain: value(auth.sso.domain),
+                        providerId: SSO_ID,
+                        ...(oidc
+                          ? {
+                              oidcConfig: {
+                                issuer,
+                                clientId: value(auth.sso.clientId),
+                                clientSecret: secret(auth.sso.clientSecret),
+                                discoveryEndpoint: discovery,
+                                pkce: true,
+                                scopes: ["openid", "email", "profile"],
+                              },
+                            }
+                          : {
+                              samlConfig: {
+                                issuer: `${base}/api/auth/sso/saml2/sp/metadata?providerId=${SSO_ID}`,
+                                // taken from the metadata
+                                entryPoint: "",
+                                callbackUrl: `${base}/`,
+                                idpMetadata: { metadata: input.samlMetadata ?? "" },
+                                wantAssertionsSigned: true,
+                              },
+                            }),
                       },
-                    }
-                  : {
-                      samlConfig: {
-                        issuer: `${base}/api/auth/sso/saml2/sp/metadata?providerId=${SSO_ID}`,
-                        // taken from the metadata
-                        entryPoint: "",
-                        callbackUrl: `${base}/`,
-                        idpMetadata: { metadata: input.samlMetadata ?? "" },
-                        wantAssertionsSigned: true,
+                    ]
+                  : []),
+                ...(m.microsoft
+                  ? [
+                      {
+                        domain: value(auth.entra.domain),
+                        providerId: ENTRA_ID,
+                        oidcConfig: {
+                          issuer: entraIssuer,
+                          clientId: value(auth.entra.clientId),
+                          clientSecret: secret(auth.entra.clientSecret),
+                          discoveryEndpoint: `${entraIssuer}/.well-known/openid-configuration`,
+                          pkce: true,
+                          scopes: ["openid", "email", "profile"],
+                        },
                       },
-                    }),
-              },
-            ],
-          }),
-        ]
-      : [],
+                    ]
+                  : []),
+              ],
+            }),
+          ]
+        : [],
     advanced: {
       cookiePrefix: "mekiki",
       ipAddress: { ipAddressHeaders: [CLIENT_IP] },
@@ -288,7 +334,7 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
   if (found.length > 0) return yield* new Misconfigured({ message: `signing in isn't set up right:\n- ${found.join("\n- ")}` })
   const m = methods(config)
   if (!enabled(config)) {
-    yield* Effect.logWarning("nobody signs in to this mekiki: anyone who reaches it can use it. set up github or sso before exposing it")
+    yield* Effect.logWarning("nobody signs in to this mekiki: anyone who reaches it can use it. set up github, sso or microsoft entra id before exposing it")
     return Service.of({
       enabled: false,
       methods: m,
@@ -393,7 +439,9 @@ export const make = Effect.fn("Auth.make")(function* (config: AppConfig, db: Aut
       effect.pipe(Effect.catchTag("AuthError", (error) => Effect.logError("couldn't check who's calling", error).pipe(Effect.as(Option.none<User>())))),
   )
 
-  yield* Effect.logInfo(`signing in with ${[m.github ? "github" : "", m.sso ? `${m.sso.name} (${m.sso.kind})` : ""].filter(Boolean).join(" and ")}`)
+  yield* Effect.logInfo(
+    `signing in with ${[m.github ? "github" : "", m.sso ? `${m.sso.name} (${m.sso.kind})` : "", m.microsoft ? `microsoft entra id (${issuerOf(config.auth)})` : ""].filter(Boolean).join(" and ")}`,
+  )
   return Service.of({
     enabled: true,
     methods: m,

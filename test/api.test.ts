@@ -77,10 +77,13 @@ const withAgent = <A, E>(
 ) => {
   const asked: Array<string> = []
   return Effect.runPromise(
-    Agent.make({ claudeBin: "/nonexistent/claude", codexBin: "/nonexistent/codex", timeout: options.timeout ?? 10, api: api(options.api) }, (id) => {
-      asked.push(id)
-      return model
-    }).pipe(
+    Agent.make(
+      { claudeBin: Option.some("/nonexistent/claude"), codexBin: "/nonexistent/codex", timeout: options.timeout ?? 10, api: api(options.api) },
+      (id) => {
+        asked.push(id)
+        return model
+      },
+    ).pipe(
       Effect.flatMap(f),
       Effect.map((result) => ({ result, asked })),
       Effect.provide(BunServices.layer),

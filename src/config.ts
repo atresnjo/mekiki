@@ -29,7 +29,7 @@ export const AppConfig = Config.all({
    * image does) or when mekiki listens beyond this machine: see requiresSignIn
    */
   env: Config.Literals(["development", "production"], "MEKIKI_ENV").pipe(Config.withDefault("development" as const)),
-  /** signing in to the dashboard: better auth, with github and/or the company's sso, and who may come in */
+  /** signing in to the dashboard: better auth, with github, the company's sso and/or microsoft entra id, and who may come in */
   auth: Config.all({
     /** where people open mekiki: oauth callbacks come back here, and only this origin may sign in */
     url: Config.String("BETTER_AUTH_URL").pipe(Config.withDefault("http://localhost:7421")),
@@ -55,6 +55,21 @@ export const AppConfig = Config.all({
       /** default: the issuer's /.well-known/openid-configuration */
       discoveryUrl: Config.option(Config.String("MEKIKI_SSO_DISCOVERY_URL")),
       samlMetadataFile: Config.option(Config.String("MEKIKI_SSO_SAML_METADATA_FILE")),
+    }),
+    /** sign in with microsoft entra id: an app registration in the company's tenant (oidc) */
+    entra: Config.all({
+      /** the directory (tenant) id: only that tenant's accounts can sign in */
+      tenantId: Config.option(Config.String("MEKIKI_ENTRA_TENANT_ID")),
+      /** the app registration's application (client) id and a client secret's value */
+      clientId: Config.option(Config.String("MEKIKI_ENTRA_CLIENT_ID")),
+      clientSecret: Config.option(Config.Redacted("MEKIKI_ENTRA_CLIENT_SECRET")),
+      /** the company's email domain: whoever entra signs in with an address there is let in */
+      domain: Config.option(Config.String("MEKIKI_ENTRA_DOMAIN")),
+      /** the issuer is `<authority>/<tenant id>/v2.0`. another cloud (login.microsoftonline.us), or a local fake entra while developing */
+      authority: Config.String("MEKIKI_ENTRA_AUTHORITY").pipe(
+        Config.withDefault("https://login.microsoftonline.com"),
+        Config.map((url) => url.replace(/\/$/, "")),
+      ),
     }),
     /** who may sign in: addresses (alice@acme.com) and whole domains (@acme.com). github's must be verified */
     allowedEmails: list("MEKIKI_ALLOWED_EMAILS"),
@@ -102,7 +117,8 @@ export const AppConfig = Config.all({
   agent: Config.all({
     /** the claude and codex clis: off, mekiki reviews with the api agent alone and never starts either (the docker image) */
     clis: Config.Boolean("MEKIKI_CLI_AGENTS").pipe(Config.withDefault(true)),
-    claudeBin: Config.String("CLAUDE_BIN").pipe(Config.withDefault("claude")),
+    /** none: the claude code the agent sdk ships */
+    claudeBin: Config.option(Config.String("CLAUDE_BIN")),
     codexBin: Config.String("CODEX_BIN").pipe(Config.withDefault("codex")),
     // reading the code takes the agent a few turns: more room than a single answer
     timeout: Config.Int("AGENT_TIMEOUT_SECONDS").pipe(Config.withDefault(600)),

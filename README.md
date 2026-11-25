@@ -116,13 +116,22 @@ docker run -d --name mekiki-postgres -e POSTGRES_USER=mekiki -e POSTGRES_PASSWOR
 bun dev         # api on http://127.0.0.1:7420, dashboard on http://localhost:7421
 ```
 
-Locally nobody has to sign in. Migrations run when the server starts. After you change `src/schema.ts`, run `bun db:generate`.
+Locally nobody has to sign in. Migrations run when the server starts.
+
+To try signing in with Microsoft without a real tenant, run a fake Microsoft Entra ID (Vercel's [emulate](https://github.com/vercel-labs/emulate)) beside it. It signs in as `alice@mekiki.test` (let in) or `eve@outsider.test` (turned away), seeded from `scripts/entra.yaml`:
+
+````bash
+bun dev:entra   # fake entra on http://localhost:4005
+MEKIKI_ENTRA_AUTHORITY=http://localhost:4005 MEKIKI_ENTRA_TENANT_ID=00000000-0000-0000-0000-0000000e1d7a \
+  MEKIKI_ENTRA_CLIENT_ID=mekiki-dev MEKIKI_ENTRA_CLIENT_SECRET=mekiki-dev-secret MEKIKI_ENTRA_DOMAIN=mekiki.test \
+  BETTER_AUTH_URL=http://localhost:7421 BETTER_AUTH_SECRET=a-development-secret-that-is-long-enough bun dev
+``` After you change `src/schema.ts`, run `bun db:generate`.
 
 Review a pull request from the terminal. It's a dry run unless you add `--post`:
 
 ```bash
 bun review https://github.com/owner/repo/pull/123 [--agent codex|api] [--model sonnet] [--depth high] [--post] [--json]
-```
+````
 
 ### Webhooks while developing
 
@@ -168,7 +177,7 @@ The compose file runs the release it came from. To pin a different one, set `MEK
 1. Point `MEKIKI_DOMAIN` at the server and set up the reverse proxy for it.
 2. Set up the [API agent](#subscription-or-api-key): `MEKIKI_API_PROVIDER`, `MEKIKI_API_MODEL` and the provider's key.
 3. Create a GitHub App with read access to contents, write access to pull requests and issues, and the **Pull requests** and **Issue comments** events. Its webhook goes to `https://<domain>/api/webhooks/github`. A personal `GITHUB_TOKEN` works too.
-4. Set up sign-in with GitHub and/or SSO (OIDC or SAML), and say who's allowed in with `MEKIKI_ALLOWED_EMAILS`, `MEKIKI_ALLOWED_GITHUB_ORGS` or `MEKIKI_SSO_DOMAIN`. In production mekiki won't start without this.
+4. Set up sign-in with GitHub, SSO (OIDC or SAML) and/or Microsoft Entra ID, and say who's allowed in with `MEKIKI_ALLOWED_EMAILS`, `MEKIKI_ALLOWED_GITHUB_ORGS`, `MEKIKI_SSO_DOMAIN` or `MEKIKI_ENTRA_DOMAIN`. In production mekiki won't start without this.
 
 `/api/health` returns 200 once the database works and the API agent has its key. Point an uptime monitor at it. Run only one mekiki per database; a second one refuses to start.
 

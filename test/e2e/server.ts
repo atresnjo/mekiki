@@ -26,7 +26,7 @@ const SignedIn = Layer.succeed(
   Auth.Service,
   Auth.Service.of({
     enabled: true,
-    methods: { github: true, sso: null },
+    methods: { github: true, sso: null, microsoft: false },
     handler: () => Effect.succeed(new Response(null, { status: 404 })),
     user: (headers) =>
       Effect.succeed(
